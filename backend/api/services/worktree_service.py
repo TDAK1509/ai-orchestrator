@@ -4,6 +4,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from db import commit
 from models.task import Task
 from models.worktree import TaskWorktree
 from runtime import worktree as worktree_ops
@@ -31,5 +32,5 @@ async def create_task_worktree(db: AsyncSession, repo_root: Path, task: Task, ba
     await worktree_ops.create_worktree(repo_root, branch, path, base_branch)
     record = TaskWorktree(id=uuid.uuid4(), task_id=task.id, branch=branch, base_branch=base_branch, path=str(path))
     db.add(record)
-    await db.commit()
+    await commit(db)
     return record

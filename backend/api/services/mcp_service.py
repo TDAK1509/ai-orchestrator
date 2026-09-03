@@ -4,6 +4,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from db import commit
 from models.agent import Agent
 from models.mcp import AgentMcpPermission
 from runtime.mcp_config import McpServerRef
@@ -59,7 +60,7 @@ async def grant_mcp_access(db, agent: Agent, server_name: str) -> AgentMcpPermis
         permission = AgentMcpPermission(id=uuid.uuid4(), agent_id=agent.id, mcp_server_name=server_name)
         db.add(permission)
     permission.allowed = True
-    await db.commit()
+    await commit(db)
     return permission
 
 
@@ -67,7 +68,7 @@ async def revoke_mcp_access(db, agent: Agent, server_name: str) -> None:
     permission = await find_permission(db, agent.id, server_name)
     if permission is not None:
         permission.allowed = False
-        await db.commit()
+        await commit(db)
 
 
 async def find_permission(db, agent_id: uuid.UUID, server_name: str) -> AgentMcpPermission | None:

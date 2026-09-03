@@ -3,6 +3,7 @@ import uuid
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from db import commit
 from models.agent import Agent, AgentStatus
 from models.attention import AttentionEvent, AttentionType
 from models.base import utcnow
@@ -16,7 +17,7 @@ async def create_decision_request(db: AsyncSession, agent: Agent, task: Task | N
     db.add(decision)
     block_agent_and_task(agent, task)
     db.add(build_decision_attention_event(agent, task, decision, question))
-    await db.commit()
+    await commit(db)
     return decision
 
 
@@ -57,7 +58,7 @@ async def answer_decision(db: AsyncSession, decision_id: uuid.UUID, answer: str)
     decision = await claim_pending_decision(db, decision_id, DecisionStatus.ANSWERED, answer=answer)
     await resolve_attention_event(db, decision)
     await unblock_agent_and_task(db, decision.agent_id, decision.task_id)
-    await db.commit()
+    await commit(db)
     return decision
 
 
@@ -70,7 +71,7 @@ async def cancel_pending_decisions_for_agent(db: AsyncSession, agent_id: uuid.UU
         claimed = await claim_pending_decision(db, decision.id, DecisionStatus.CANCELLED)
         await resolve_attention_event(db, claimed)
         cancelled.append(claimed)
-    await db.commit()
+    await commit(db)
     return cancelled
 
 

@@ -3,6 +3,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from db import commit
 from models.agent import Agent, AgentStatus
 from models.attention import AttentionEvent, AttentionType
 from models.base import utcnow
@@ -13,8 +14,8 @@ from models.worktree import TaskWorktree
 from runtime import landing
 from runtime import worktree as worktree_ops
 from runtime.mcp_config import McpServerRef
-from runtime.prompt import build_initial_user_message
 from runtime.runtime_service import RuntimeService
+from services.context_builder import build_initial_message
 from services.mcp_service import (
     default_pool_paths,
     read_mcp_pool,
@@ -40,7 +41,7 @@ async def create_task(
 ) -> Task:
     task = Task(id=uuid.uuid4(), title=title, description=description, priority=priority)
     db.add(task)
-    await db.commit()
+    await commit(db)
     return task
 
 
@@ -58,8 +59,9 @@ async def start_agent_on_task(db, runtime_service: RuntimeService, repo_root: Pa
     """Assumes the caller already claimed agent's WORKING slot; only spawns and hands the run to a background driver."""
     task_worktree = await ensure_task_worktree(db, repo_root, task, policy.base_branch)
     allowed_servers = await resolve_agent_mcp_servers(db, repo_root, agent)
-    run = await runtime_service.spawn(agent, task_worktree, allowed_servers, build_initial_user_message(task))
-    schedule_run_completion(db, runtime_service, repo_root, agent, task, task_worktree, run, policy)
+    message = await build_initial_message(db, agent, task, repo_root, allowed_servers)
+    run = await runtime_service.spawn(agent, task_worktree, allowed_servers, message)
+    schedule_run_completion(runtime_service, repo_root, agent.id, task.id, task_worktree.id, run.id, policy)
 
 
 async def resolve_agent_mcp_servers(db, repo_root: Path, agent: Agent) -> list[McpServerRef]:
@@ -67,18 +69,29 @@ async def resolve_agent_mcp_servers(db, repo_root: Path, agent: Agent) -> list[M
     return await resolve_allowed_servers(db, agent.id, pool)
 
 
-def schedule_run_completion(db, runtime_service, repo_root, agent, task, task_worktree, run, policy) -> None:
-    """One worker owns one process for its whole life (README 31.1): this is that worker, driving the run to a finished task without a caller needing to poll it."""
-    coroutine = drive_run_to_completion(db, runtime_service, repo_root, agent, task, task_worktree, run, policy)
+def schedule_run_completion(runtime_service, repo_root, agent_id, task_id, task_worktree_id, run_id, policy) -> None:
+    """One worker owns one process for its whole life (README 31.1): this is that worker, driving the run to a finished task on its own session, never the caller's."""
+    coroutine = drive_run_to_completion(runtime_service, repo_root, agent_id, task_id, task_worktree_id, run_id, policy)
     background_task = asyncio.create_task(coroutine)
     _BACKGROUND_RUNS.add(background_task)
     background_task.add_done_callback(_BACKGROUND_RUNS.discard)
 
 
-async def drive_run_to_completion(db, runtime_service, repo_root, agent, task, task_worktree, run, policy) -> None:
-    async for _event in runtime_service.stream_events(run.id):
+async def drive_run_to_completion(runtime_service, repo_root, agent_id, task_id, task_worktree_id, run_id, policy) -> None:
+    async for _event in runtime_service.stream_events(run_id):
         pass
-    await finish_task_run(db, runtime_service, repo_root, agent, task, task_worktree, run, policy)
+    async with runtime_service.session_factory() as db:
+        agent, task, task_worktree, run = await load_run_context(db, agent_id, task_id, task_worktree_id, run_id)
+        await finish_task_run(db, runtime_service, repo_root, agent, task, task_worktree, run, policy)
+
+
+async def load_run_context(db, agent_id, task_id, task_worktree_id, run_id):
+    """The run may have started long before this coroutine resumes (stream_events blocks on the process): reload state fresh instead of trusting stale objects from before the spawn."""
+    agent = await db.get(Agent, agent_id)
+    task = await db.get(Task, task_id)
+    task_worktree = await db.get(TaskWorktree, task_worktree_id)
+    run = await db.get(ExecutionRun, run_id)
+    return agent, task, task_worktree, run
 
 
 async def finish_task_run(db, runtime_service: RuntimeService, repo_root: Path, agent: Agent, task: Task, task_worktree: TaskWorktree, run: ExecutionRun, policy: TaskRuntimePolicy) -> None:
@@ -107,7 +120,7 @@ async def land_task(db, task: Task, task_worktree: TaskWorktree, repo_root: Path
     db.add(merge)
     task.status = TaskStatus.DONE
     task.completed_at = utcnow()
-    await db.commit()
+    await commit(db)
     return merge
 
 
@@ -149,14 +162,14 @@ async def block_task(db, agent: Agent, task: Task, title: str, message: str) -> 
     agent.needs_attention = True
     event = AttentionEvent(id=uuid.uuid4(), type=AttentionType.TASK_FAILED, agent_id=agent.id, task_id=task.id, title=title, message=message)
     db.add(event)
-    await db.commit()
+    await commit(db)
     return event
 
 
 async def release_agent(db, agent: Agent) -> None:
     agent.status = AgentStatus.IDLE
     agent.current_task_id = None
-    await db.commit()
+    await commit(db)
 
 
 async def promote_next_queued_agent(db, runtime_service: RuntimeService, repo_root: Path, policy: TaskRuntimePolicy) -> Agent | None:
