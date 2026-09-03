@@ -9,6 +9,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from db import DEFAULT_DATABASE_URL
 from models.agent import Agent
 from models.attention import AttentionEvent, AttentionType
 from models.base import utcnow
@@ -27,7 +28,9 @@ class RuntimeSettings:
     model: str = "claude-sonnet-5"
     permission_mode: str = "acceptEdits"
     runtime_root: Path = field(default_factory=lambda: Path(".agent-office/runtime"))
-    database_url: str | None = field(default_factory=lambda: os.environ.get("DATABASE_URL"))
+    database_url: str | None = field(default_factory=lambda: os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL))
+    # allow-comment: separate from database_url so a deployment can hand the agent-facing ask_human server a least-privilege role instead of the backend's own full-access connection string.
+    ask_human_database_url: str | None = None
 
 
 class RuntimeService:
@@ -72,14 +75,11 @@ class RuntimeService:
 
     def _build_internal_servers(self, agent: Agent, task_worktree: TaskWorktree) -> dict[str, dict]:
         """Wires the ask_human tool (README 19.7) in for every run: unlike a catalog server, it isn't opt-in."""
-        if not self.settings.database_url:
+        database_url = self.settings.ask_human_database_url or self.settings.database_url
+        if not database_url:
             return {}
         ask_human_script = Path(__file__).with_name("ask_human_mcp.py")
-        env = {
-            "DATABASE_URL": self.settings.database_url,
-            "AGENT_ID": str(agent.id),
-            "TASK_ID": str(task_worktree.task_id),
-        }
+        env = {"DATABASE_URL": database_url, "AGENT_ID": str(agent.id), "TASK_ID": str(task_worktree.task_id)}
         return {"ask_human": {"command": sys.executable, "args": [str(ask_human_script)], "env": env}}
 
     async def _open_session_and_run(

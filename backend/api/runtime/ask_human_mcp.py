@@ -23,22 +23,22 @@ server = MCPServer(name="agent-office-ask-human")
 
 @server.tool()
 async def ask_human(question: str, options: list[str] | None = None, urgency: str = "normal") -> str:
-    session_factory = build_session_factory()
-    async with session_factory() as db:
-        decision = await open_decision(db, question, options)
-        return await wait_for_answer(db, decision.id)
-
-
-def build_session_factory() -> async_sessionmaker[AsyncSession]:
+    """Each poll opens and closes its own short-lived session: the human may take minutes, and this must not hold one connection/transaction open the whole time."""
     engine = create_async_engine(os.environ["DATABASE_URL"])
-    return async_sessionmaker(engine, expire_on_commit=False)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        decision_id = await open_decision(session_factory, question, options)
+        return await wait_for_answer(session_factory, decision_id)
+    finally:
+        await engine.dispose()
 
 
-async def open_decision(db: AsyncSession, question: str, options: list[str] | None) -> DecisionRequest:
-    agent = await db.get(Agent, uuid.UUID(os.environ["AGENT_ID"]))
-    task = await load_task(db)
-    formatted_options = format_options(options)
-    return await create_decision_request(db, agent, task, question, formatted_options)
+async def open_decision(session_factory: async_sessionmaker[AsyncSession], question: str, options: list[str] | None) -> uuid.UUID:
+    async with session_factory() as db:
+        agent = await db.get(Agent, uuid.UUID(os.environ["AGENT_ID"]))
+        task = await load_task(db)
+        decision = await create_decision_request(db, agent, task, question, format_options(options))
+        return decision.id
 
 
 async def load_task(db: AsyncSession) -> Task | None:
@@ -52,13 +52,15 @@ def format_options(options: list[str] | None) -> list[dict] | None:
     return [{"id": str(index), "label": label} for index, label in enumerate(options)]
 
 
-async def wait_for_answer(db: AsyncSession, decision_id: uuid.UUID) -> str:
+async def wait_for_answer(session_factory: async_sessionmaker[AsyncSession], decision_id: uuid.UUID) -> str:
     while True:
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
-        db.expire_all()
-        decision = await db.get(DecisionRequest, decision_id)
-        if decision.status == DecisionStatus.ANSWERED:
-            return decision.answer
+        async with session_factory() as db:
+            decision = await db.get(DecisionRequest, decision_id)
+            if decision.status == DecisionStatus.CANCELLED:
+                raise RuntimeError("This decision was cancelled: the run it belonged to is no longer alive.")
+            if decision.status == DecisionStatus.ANSWERED:
+                return decision.answer
 
 
 if __name__ == "__main__":

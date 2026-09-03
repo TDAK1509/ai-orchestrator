@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.agent import Agent, AgentStatus
@@ -53,15 +53,37 @@ def build_decision_attention_event(agent: Agent, task: Task | None, decision: De
 
 
 async def answer_decision(db: AsyncSession, decision_id: uuid.UUID, answer: str) -> DecisionRequest:
-    """The other half of the round trip (README 31.3): unblocks agent and task, and lets the waiting tool call return."""
-    decision = await db.get(DecisionRequest, decision_id)
-    decision.status = DecisionStatus.ANSWERED
-    decision.answer = answer
-    decision.answered_at = utcnow()
+    """The other half of the round trip (README 31.3). Claiming the row and deciding whether to unblock the agent are both done under a row lock, so two answers (or an answer racing an orphan cancellation) can't corrupt agent/task state."""
+    decision = await claim_pending_decision(db, decision_id, DecisionStatus.ANSWERED, answer=answer)
     await resolve_attention_event(db, decision)
-    await unblock_agent_and_task(db, decision)
+    await unblock_agent_and_task(db, decision.agent_id, decision.task_id)
     await db.commit()
     return decision
+
+
+async def cancel_pending_decisions_for_agent(db: AsyncSession, agent_id: uuid.UUID) -> list[DecisionRequest]:
+    """Called when an agent's run is found dead (README 31.5 reconciliation): a decision nobody can still act on must not later "answer" and resurrect the agent as working."""
+    query = select(DecisionRequest).where(DecisionRequest.agent_id == agent_id, DecisionRequest.status == DecisionStatus.PENDING)
+    pending = list((await db.execute(query)).scalars())
+    cancelled = []
+    for decision in pending:
+        claimed = await claim_pending_decision(db, decision.id, DecisionStatus.CANCELLED)
+        await resolve_attention_event(db, claimed)
+        cancelled.append(claimed)
+    await db.commit()
+    return cancelled
+
+
+async def claim_pending_decision(db: AsyncSession, decision_id: uuid.UUID, new_status: DecisionStatus, answer: str | None = None) -> DecisionRequest:
+    """One atomic UPDATE ... WHERE status = pending: whichever caller's answer/cancel wins, the loser gets a clear error instead of silently overwriting the winner."""
+    values = {"status": new_status, "answered_at": utcnow()}
+    if answer is not None:
+        values["answer"] = answer
+    stmt = update(DecisionRequest).where(DecisionRequest.id == decision_id, DecisionRequest.status == DecisionStatus.PENDING).values(**values)
+    result = await db.execute(stmt)
+    if result.rowcount == 0:
+        raise ValueError(f"decision {decision_id} is not pending (already answered, cancelled, or missing)")
+    return await db.get(DecisionRequest, decision_id)
 
 
 async def resolve_attention_event(db: AsyncSession, decision: DecisionRequest) -> None:
@@ -72,12 +94,15 @@ async def resolve_attention_event(db: AsyncSession, decision: DecisionRequest) -
         event.resolved_at = utcnow()
 
 
-async def unblock_agent_and_task(db: AsyncSession, decision: DecisionRequest) -> None:
-    agent = await db.get(Agent, decision.agent_id)
+async def unblock_agent_and_task(db: AsyncSession, agent_id: uuid.UUID, task_id: uuid.UUID | None) -> None:
+    agent = (await db.execute(select(Agent).where(Agent.id == agent_id).with_for_update())).scalar_one()
+    still_pending = await has_pending_decision(db, agent.id)
+    agent.needs_attention = still_pending
+    if still_pending:
+        return
     agent.status = AgentStatus.WORKING
-    agent.needs_attention = await has_pending_decision(db, agent.id)
-    if decision.task_id is not None:
-        task = await db.get(Task, decision.task_id)
+    if task_id is not None:
+        task = await db.get(Task, task_id)
         task.status = TaskStatus.IN_PROGRESS
 
 
