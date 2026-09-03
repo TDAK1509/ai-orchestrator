@@ -1,6 +1,10 @@
 import asyncio
 from pathlib import Path
 
+from .process import build_subprocess_env
+
+NO_HOOKS_ARGS = ["-c", "core.hooksPath=/dev/null"]
+
 
 class GitCommandError(RuntimeError):
     def __init__(self, argv: list[str], returncode: int, stderr: str):
@@ -49,7 +53,7 @@ async def commit_worktree(path: Path, message: str) -> str | None:
     await run_git(["add", "-A"], cwd=path)
     if not await has_staged_changes(path):
         return None
-    await run_git(["commit", "-m", message], cwd=path)
+    await run_git(["commit", "--no-verify", "-m", message], cwd=path)
     return await read_head_commit(path)
 
 
@@ -64,14 +68,17 @@ async def has_staged_changes(path: Path) -> bool:
 
 
 async def run_git(args: list[str], cwd: Path) -> str:
+    """Hooks disabled, secret-free environment: the task worktree's contents are agent-controlled, not trusted."""
+    argv = ["git", *NO_HOOKS_ARGS, *args]
+    stdout, stderr, returncode = await run_subprocess(argv, cwd)
+    if returncode != 0:
+        raise GitCommandError(argv, returncode, stderr.decode())
+    return stdout.decode()
+
+
+async def run_subprocess(argv: list[str], cwd: Path) -> tuple[bytes, bytes, int]:
     process = await asyncio.create_subprocess_exec(
-        "git",
-        *args,
-        cwd=str(cwd),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        *argv, cwd=str(cwd), env=build_subprocess_env(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
     stdout, stderr = await process.communicate()
-    if process.returncode != 0:
-        raise GitCommandError(["git", *args], process.returncode, stderr.decode())
-    return stdout.decode()
+    return stdout, stderr, process.returncode

@@ -1,4 +1,3 @@
-import asyncio
 from pathlib import Path
 
 from .worktree import (
@@ -7,6 +6,7 @@ from .worktree import (
     read_current_branch,
     read_head_commit,
     run_git,
+    run_subprocess,
 )
 
 
@@ -17,8 +17,16 @@ class DirectMergeUnsafeError(RuntimeError):
 async def merge_direct(repo_root: Path, branch: str, target_branch: str) -> str:
     """Only ever merges into a clean, already-checked-out target: never checks target_branch out itself, since repo_root may be the developer's own working tree."""
     await require_clean_checkout_of(repo_root, target_branch)
-    await run_git(["merge", "--no-ff", "--no-edit", branch], cwd=repo_root)
+    await attempt_merge(repo_root, branch)
     return await read_head_commit(repo_root)
+
+
+async def attempt_merge(repo_root: Path, branch: str) -> None:
+    try:
+        await run_git(["merge", "--no-ff", "--no-edit", branch], cwd=repo_root)
+    except GitCommandError:
+        await run_git(["merge", "--abort"], cwd=repo_root)
+        raise
 
 
 async def require_clean_checkout_of(repo_root: Path, target_branch: str) -> None:
@@ -37,10 +45,8 @@ async def open_pull_request(path: Path, base_branch: str, head_branch: str, titl
 
 
 async def run_gh(args: list[str], cwd: Path) -> str:
-    process = await asyncio.create_subprocess_exec(
-        "gh", *args, cwd=str(cwd), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
-    stdout, stderr = await process.communicate()
-    if process.returncode != 0:
-        raise GitCommandError(["gh", *args], process.returncode, stderr.decode())
+    argv = ["gh", *args]
+    stdout, stderr, returncode = await run_subprocess(argv, cwd)
+    if returncode != 0:
+        raise GitCommandError(argv, returncode, stderr.decode())
     return stdout.decode()

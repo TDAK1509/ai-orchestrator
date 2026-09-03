@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,8 +14,11 @@ from runtime import landing
 from runtime import worktree as worktree_ops
 from runtime.prompt import build_initial_user_message
 from runtime.runtime_service import RuntimeService
-from services.scheduler_service import find_next_queued_agent, has_free_slot
+from services.scheduler_service import claim_next_queued_agent, claim_slot_or_queue
 from services.worktree_service import ensure_task_worktree
+
+_DIRECT_MERGE_LOCK = asyncio.Lock()
+_BACKGROUND_RUNS: set[asyncio.Task] = set()
 
 
 @dataclass
@@ -39,34 +43,47 @@ async def assign_task(db, runtime_service: RuntimeService, repo_root: Path, task
     task.status = TaskStatus.IN_PROGRESS
     task.started_at = utcnow()
     agent.current_task_id = task.id
-    if await has_free_slot(db, policy.max_concurrent_agents):
-        await start_agent_on_task(db, runtime_service, repo_root, agent, task, policy.base_branch)
-    else:
-        await queue_agent(db, agent)
+    if await claim_slot_or_queue(db, agent, policy.max_concurrent_agents):
+        await start_agent_on_task(db, runtime_service, repo_root, agent, task, policy)
     return task
 
 
-async def queue_agent(db, agent: Agent) -> None:
-    agent.status = AgentStatus.QUEUED
-    await db.commit()
+async def start_agent_on_task(db, runtime_service: RuntimeService, repo_root: Path, agent: Agent, task: Task, policy: TaskRuntimePolicy) -> None:
+    """Assumes the caller already claimed agent's WORKING slot; only spawns and hands the run to a background driver."""
+    task_worktree = await ensure_task_worktree(db, repo_root, task, policy.base_branch)
+    run = await runtime_service.spawn(agent, task_worktree, [], build_initial_user_message(task))
+    schedule_run_completion(db, runtime_service, repo_root, agent, task, task_worktree, run, policy)
 
 
-async def start_agent_on_task(
-    db, runtime_service: RuntimeService, repo_root: Path, agent: Agent, task: Task, base_branch: str
-) -> None:
-    task_worktree = await ensure_task_worktree(db, repo_root, task, base_branch)
-    await runtime_service.spawn(agent, task_worktree, [], build_initial_user_message(task))
-    agent.status = AgentStatus.WORKING
-    await runtime_service.commit()
+def schedule_run_completion(db, runtime_service, repo_root, agent, task, task_worktree, run, policy) -> None:
+    """One worker owns one process for its whole life (README 31.1): this is that worker, driving the run to a finished task without a caller needing to poll it."""
+    coroutine = drive_run_to_completion(db, runtime_service, repo_root, agent, task, task_worktree, run, policy)
+    background_task = asyncio.create_task(coroutine)
+    _BACKGROUND_RUNS.add(background_task)
+    background_task.add_done_callback(_BACKGROUND_RUNS.discard)
+
+
+async def drive_run_to_completion(db, runtime_service, repo_root, agent, task, task_worktree, run, policy) -> None:
+    async for _event in runtime_service.stream_events(run.id):
+        pass
+    await finish_task_run(db, runtime_service, repo_root, agent, task, task_worktree, run, policy)
 
 
 async def finish_task_run(db, runtime_service: RuntimeService, repo_root: Path, agent: Agent, task: Task, task_worktree: TaskWorktree, run: ExecutionRun, policy: TaskRuntimePolicy) -> None:
     if run.status == RunStatus.COMPLETED:
-        await land_task(db, task, task_worktree, repo_root, policy)
-        await release_agent(db, agent)
+        await land_or_block(db, agent, task, task_worktree, repo_root, policy)
     else:
         await fail_task(db, agent, task, run)
     await promote_next_queued_agent(db, runtime_service, repo_root, policy)
+
+
+async def land_or_block(db, agent: Agent, task: Task, task_worktree: TaskWorktree, repo_root: Path, policy: TaskRuntimePolicy) -> None:
+    try:
+        await land_task(db, task, task_worktree, repo_root, policy)
+    except Exception as error:  # noqa: BLE001 - a landing failure must block the task, not vanish in a background task
+        await block_on_landing_failure(db, agent, task, error)
+        return
+    await release_agent(db, agent)
 
 
 async def land_task(db, task: Task, task_worktree: TaskWorktree, repo_root: Path, policy: TaskRuntimePolicy) -> TaskMerge:
@@ -98,29 +115,30 @@ async def record_pr_merge(task: Task, task_worktree: TaskWorktree, target_branch
 
 
 async def record_direct_merge(task: Task, task_worktree: TaskWorktree, repo_root: Path, target_branch: str) -> TaskMerge:
-    merge_commit = await landing.merge_direct(repo_root, task_worktree.branch, target_branch)
+    """Serialized: repo_root is one shared checkout, so two landings can't merge into it at the same time."""
+    async with _DIRECT_MERGE_LOCK:
+        merge_commit = await landing.merge_direct(repo_root, task_worktree.branch, target_branch)
     return TaskMerge(id=uuid.uuid4(), task_id=task.id, type=MergeType.DIRECT, target_branch=target_branch, merge_commit=merge_commit)
 
 
+async def block_on_landing_failure(db, agent: Agent, task: Task, error: Exception) -> AttentionEvent:
+    return await block_task(db, agent, task, f"Landing {task.title} failed", str(error))
+
+
 async def fail_task(db, agent: Agent, task: Task, run: ExecutionRun) -> AttentionEvent:
+    title = f"{agent.name} failed {task.title}"
+    message = f"Execution run {run.id} exited with code {run.exit_code}."
+    return await block_task(db, agent, task, title, message)
+
+
+async def block_task(db, agent: Agent, task: Task, title: str, message: str) -> AttentionEvent:
     task.status = TaskStatus.BLOCKED
     agent.status = AgentStatus.BLOCKED
     agent.needs_attention = True
-    event = build_run_failed_attention_event(agent, task, run)
+    event = AttentionEvent(id=uuid.uuid4(), type=AttentionType.TASK_FAILED, agent_id=agent.id, task_id=task.id, title=title, message=message)
     db.add(event)
     await db.commit()
     return event
-
-
-def build_run_failed_attention_event(agent: Agent, task: Task, run: ExecutionRun) -> AttentionEvent:
-    return AttentionEvent(
-        id=uuid.uuid4(),
-        type=AttentionType.TASK_FAILED,
-        agent_id=agent.id,
-        task_id=task.id,
-        title=f"{agent.name} failed {task.title}",
-        message=f"Execution run {run.id} exited with code {run.exit_code}.",
-    )
 
 
 async def release_agent(db, agent: Agent) -> None:
@@ -129,12 +147,10 @@ async def release_agent(db, agent: Agent) -> None:
     await db.commit()
 
 
-async def promote_next_queued_agent(
-    db, runtime_service: RuntimeService, repo_root: Path, policy: TaskRuntimePolicy
-) -> Agent | None:
-    next_agent = await find_next_queued_agent(db)
+async def promote_next_queued_agent(db, runtime_service: RuntimeService, repo_root: Path, policy: TaskRuntimePolicy) -> Agent | None:
+    next_agent = await claim_next_queued_agent(db, policy.max_concurrent_agents)
     if next_agent is None:
         return None
     task = await db.get(Task, next_agent.current_task_id)
-    await start_agent_on_task(db, runtime_service, repo_root, next_agent, task, policy.base_branch)
+    await start_agent_on_task(db, runtime_service, repo_root, next_agent, task, policy)
     return next_agent
