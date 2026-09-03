@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -34,6 +35,7 @@ class RuntimeService:
         self.settings = settings
         self._processes: dict[uuid.UUID, process.ManagedProcess] = {}
         self._kill_requested: set[uuid.UUID] = set()
+        self._db_lock = asyncio.Lock()
 
     async def spawn(
         self,
@@ -76,7 +78,7 @@ class RuntimeService:
     async def _launch_process(self, run, task_worktree, mcp_config_path, resume_session, initial_message, env) -> None:
         managed = await self._spawn_process(task_worktree, mcp_config_path, resume_session, env)
         run.pid = managed.pid
-        await self.db.commit()
+        await self.commit()
         self._processes[run.id] = managed
         await managed.send_line(initial_message)
         await managed.close_stdin()
@@ -156,7 +158,7 @@ class RuntimeService:
     async def _apply_event(self, agent_session: AgentSession, event: DomainEvent) -> None:
         if event.kind == "session_started" and event.claude_session_id:
             agent_session.claude_session_id = event.claude_session_id
-            await self.db.commit()
+            await self.commit()
 
     async def _finalize_run(
         self, managed: process.ManagedProcess, agent_session: AgentSession, run: ExecutionRun
@@ -169,7 +171,7 @@ class RuntimeService:
         run.status = self._resolve_final_status(run, exit_code)
         run.after_head_commit = await worktree.read_head_commit(Path(agent_session.cwd))
         self._processes.pop(run.id, None)
-        await self.db.commit()
+        await self.commit()
 
     def _resolve_final_status(self, run: ExecutionRun, exit_code: int) -> RunStatus:
         # allow-comment: kept off kill_run so only this stream loop's task ever writes to self.db, avoiding a second task racing the same AsyncSession.
@@ -203,7 +205,7 @@ class RuntimeService:
         run.status = RunStatus.FAILED
         run.completed_at = utcnow()
         self.db.add(self._build_orphan_attention_event(run))
-        await self.db.commit()
+        await self.commit()
 
     def _build_orphan_attention_event(self, run: ExecutionRun) -> AttentionEvent:
         return AttentionEvent(
@@ -212,6 +214,11 @@ class RuntimeService:
             title="Execution run orphaned",
             message=f"Run {run.id} had no live process on startup and was marked failed.",
         )
+
+    async def commit(self) -> None:
+        """Every db write goes through here, even from outside this class: one AsyncSession is shared across concurrent tasks, and it cannot survive two commits interleaving."""
+        async with self._db_lock:
+            await self.db.commit()
 
 
 def require_resumable_session(agent: Agent, task_worktree: TaskWorktree, agent_session: AgentSession) -> None:
