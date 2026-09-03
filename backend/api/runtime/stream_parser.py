@@ -31,6 +31,8 @@ def parse_stream_line(line: str) -> DomainEvent:
         payload = json.loads(stripped)
     except json.JSONDecodeError:
         return DomainEvent(kind="unknown", raw={"raw_line": stripped})
+    if not isinstance(payload, dict):
+        return DomainEvent(kind="unknown", raw={"raw_line": stripped})
     return parse_stream_payload(payload)
 
 

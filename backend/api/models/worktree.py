@@ -20,9 +20,9 @@ class TaskWorktree(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     task_id: Mapped[uuid.UUID] = mapped_column(
         GUID(), ForeignKey("tasks.id"), nullable=False, unique=True
     )
-    branch: Mapped[str] = mapped_column(String(200), nullable=False)
+    branch: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
     base_branch: Mapped[str] = mapped_column(String(200), nullable=False, default="main")
-    path: Mapped[str] = mapped_column(String(500), nullable=False)
+    path: Mapped[str] = mapped_column(String(500), nullable=False, unique=True)
 
     status: Mapped[WorktreeStatus] = mapped_column(
         Enum(WorktreeStatus, native_enum=False, length=10),

@@ -10,14 +10,31 @@ class GitCommandError(RuntimeError):
         self.stderr = stderr
 
 
+class WorktreeMismatchError(RuntimeError):
+    def __init__(self, path: Path, expected_branch: str, actual_branch: str):
+        super().__init__(f"{path} exists but is on branch {actual_branch!r}, expected {expected_branch!r}")
+
+
 async def create_worktree(repo_root: Path, branch: str, path: Path, base_branch: str) -> None:
     if path.exists():
+        await verify_existing_worktree(path, branch)
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     await run_git(
         ["worktree", "add", "-b", branch, str(path), base_branch],
         cwd=repo_root,
     )
+
+
+async def verify_existing_worktree(path: Path, branch: str) -> None:
+    actual_branch = await read_current_branch(path)
+    if actual_branch != branch:
+        raise WorktreeMismatchError(path, branch, actual_branch)
+
+
+async def read_current_branch(path: Path) -> str:
+    output = await run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=path)
+    return output.strip()
 
 
 async def remove_worktree(repo_root: Path, path: Path) -> None:

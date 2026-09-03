@@ -5,7 +5,6 @@ Drives tests/fixtures/fake_claude.py by default, or pass --claude-binary claude 
 """
 import argparse
 import asyncio
-import os
 import shutil
 import sys
 import tempfile
@@ -107,13 +106,12 @@ async def resume_and_stream(service: RuntimeService, agent: Agent, task_worktree
 
 async def prove_kill(service: RuntimeService, agent: Agent, task_worktree: TaskWorktree) -> None:
     print("--- kill a hung run ---")
-    os.environ["FAKE_CLAUDE_HANG"] = "1"
-    run = await service.spawn(agent, task_worktree, [], {"type": "user", "message": {"role": "user", "content": "hang"}})
+    message = {"type": "user", "message": {"role": "user", "content": "hang"}}
+    run = await service.spawn(agent, task_worktree, [], message, env={"FAKE_CLAUDE_HANG": "1"})
     consumer = asyncio.create_task(drain(service.stream_events(run.id)))
     await asyncio.sleep(0.3)
     await service.kill_run(run.id)
     await asyncio.wait_for(consumer, timeout=5)
-    os.environ.pop("FAKE_CLAUDE_HANG", None)
     print(f"  run status={run.status.value}")
 
 

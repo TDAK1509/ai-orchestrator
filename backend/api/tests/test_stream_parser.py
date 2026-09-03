@@ -38,6 +38,12 @@ def test_malformed_line_becomes_unknown_and_never_raises():
     assert event.kind == "unknown"
 
 
+def test_valid_non_dict_json_becomes_unknown_and_never_raises():
+    assert parse_stream_line("null").kind == "unknown"
+    assert parse_stream_line("[1, 2, 3]").kind == "unknown"
+    assert parse_stream_line('"just a string"').kind == "unknown"
+
+
 def test_blank_line_becomes_unknown():
     event = parse_stream_line("   \n")
     assert event.kind == "unknown"

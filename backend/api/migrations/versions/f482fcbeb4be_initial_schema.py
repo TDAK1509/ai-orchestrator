@@ -1,8 +1,8 @@
 """initial schema
 
-Revision ID: 9478e8d0bfcd
+Revision ID: f482fcbeb4be
 Revises: 
-Create Date: 2026-09-03 09:16:52.446012
+Create Date: 2026-09-03 09:35:19.652013
 
 """
 from collections.abc import Sequence
@@ -12,7 +12,7 @@ from alembic import op
 
 import models.base
 
-revision: str = '9478e8d0bfcd'
+revision: str = 'f482fcbeb4be'
 down_revision: str | None = None
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
@@ -85,6 +85,8 @@ def upgrade() -> None:
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.ForeignKeyConstraint(['task_id'], ['tasks.id'], ),
     sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('branch'),
+    sa.UniqueConstraint('path'),
     sa.UniqueConstraint('task_id')
     )
     op.create_table('agent_sessions',

@@ -1,4 +1,5 @@
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,4 +17,5 @@ def write_mcp_config(runtime_dir: Path, allowed_servers: list[McpServerRef]) -> 
     config_path = runtime_dir / "mcp.json"
     servers = {server.name: server.connection for server in allowed_servers}
     config_path.write_text(json.dumps({"mcpServers": servers}, indent=2))
+    os.chmod(config_path, 0o600)
     return config_path

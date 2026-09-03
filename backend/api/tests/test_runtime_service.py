@@ -1,8 +1,10 @@
 import asyncio
 import uuid
 
+import pytest
 from sqlalchemy import select
 
+from models.agent import Agent
 from models.attention import AttentionEvent
 from models.base import utcnow
 from models.session import AgentSession, BoundVia, ExecutionRun, RunStatus
@@ -50,10 +52,10 @@ async def test_resume_reuses_the_same_claude_session_id(runtime_service, agent, 
     assert session.claude_session_id == claude_session_id
 
 
-async def test_kill_run_stops_a_hanging_process(runtime_service, agent, task_worktree, monkeypatch):
-    monkeypatch.setenv("FAKE_CLAUDE_HANG", "1")
+async def test_kill_run_stops_a_hanging_process(runtime_service, agent, task_worktree):
     task, wt = task_worktree
-    run = await runtime_service.spawn(agent, wt, [], build_initial_user_message(task))
+    message = build_initial_user_message(task)
+    run = await runtime_service.spawn(agent, wt, [], message, env={"FAKE_CLAUDE_HANG": "1"})
     consumer = asyncio.create_task(drain(runtime_service.stream_events(run.id)))
     await asyncio.sleep(0.3)
 
@@ -61,6 +63,39 @@ async def test_kill_run_stops_a_hanging_process(runtime_service, agent, task_wor
     await asyncio.wait_for(consumer, timeout=5)
 
     assert run.status == RunStatus.KILLED
+
+
+async def test_non_zero_exit_fails_the_run_even_if_the_stream_claims_success(runtime_service, agent, task_worktree):
+    task, wt = task_worktree
+    message = build_initial_user_message(task)
+    run = await runtime_service.spawn(agent, wt, [], message, env={"FAKE_CLAUDE_EXIT_CODE": "1"})
+    await drain(runtime_service.stream_events(run.id))
+
+    assert run.exit_code == 1
+    assert run.status == RunStatus.FAILED
+
+
+async def test_resume_rejects_a_session_never_persisted_by_claude(runtime_service, agent, task_worktree):
+    _task, wt = task_worktree
+    session = AgentSession(id=uuid.uuid4(), agent_id=agent.id, task_worktree_id=wt.id, cwd=wt.path)
+    runtime_service.db.add(session)
+    await runtime_service.db.flush()
+
+    with pytest.raises(ValueError):
+        await runtime_service.resume(agent, session, wt, [], "continue")
+
+
+async def test_resume_rejects_a_session_owned_by_another_agent(runtime_service, agent, task_worktree):
+    _task, wt = task_worktree
+    other_agent = Agent(id=uuid.uuid4(), name="Maya", role="Frontend Engineer", instructions="")
+    session = AgentSession(
+        id=uuid.uuid4(), agent_id=other_agent.id, task_worktree_id=wt.id, cwd=wt.path, claude_session_id="sess_1"
+    )
+    runtime_service.db.add_all([other_agent, session])
+    await runtime_service.db.flush()
+
+    with pytest.raises(ValueError):
+        await runtime_service.resume(agent, session, wt, [], "continue")
 
 
 async def test_reconcile_orphans_fails_runs_whose_pid_is_gone(runtime_service, agent, task_worktree):

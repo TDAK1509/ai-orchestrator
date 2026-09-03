@@ -17,6 +17,7 @@ def main() -> None:
     touched_path = write_marker_file(prompt)
     emit_tool_use_event(touched_path)
     emit_line({"type": "result", "subtype": os.environ.get("FAKE_CLAUDE_RESULT", "success")})
+    sys.exit(int(os.environ.get("FAKE_CLAUDE_EXIT_CODE", "0")))
 
 
 def resolve_session_id() -> str:
