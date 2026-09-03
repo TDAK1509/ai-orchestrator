@@ -1,8 +1,10 @@
-# Agent Office — UI / Product Specification
+# Agent Office
+
+A web interface for managing multiple Claude Code agents as if they are people working in a shared office.
+
+This document is the product and technical specification. Section 19 defines the execution runtime, which is the part that must work first.
 
 ## Goal
-
-Build a web interface for managing multiple Claude Code agents as if they are people working in a shared office.
 
 The interface should make it easy to:
 
