@@ -3,9 +3,9 @@ from pathlib import Path
 
 
 class GitCommandError(RuntimeError):
-    def __init__(self, args: list[str], returncode: int, stderr: str):
-        super().__init__(f"git {' '.join(args)} failed ({returncode}): {stderr.strip()}")
-        self.args_run = args
+    def __init__(self, argv: list[str], returncode: int, stderr: str):
+        super().__init__(f"{' '.join(argv)} failed ({returncode}): {stderr.strip()}")
+        self.argv = argv
         self.returncode = returncode
         self.stderr = stderr
 
@@ -73,5 +73,5 @@ async def run_git(args: list[str], cwd: Path) -> str:
     )
     stdout, stderr = await process.communicate()
     if process.returncode != 0:
-        raise GitCommandError(args, process.returncode, stderr.decode())
+        raise GitCommandError(["git", *args], process.returncode, stderr.decode())
     return stdout.decode()
