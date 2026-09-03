@@ -13,8 +13,7 @@ The interface should make it easy to:
 - Fire/remove an agent safely.
 - Maintain a repository-backed global **Skill Catalog** from the UI.
 - Assign selected skills from that catalog to each agent.
-- Maintain a global pool of **MCP servers** from the UI.
-- Control which MCP servers each agent is allowed to use.
+- Control which MCP servers each agent is allowed to use. MCP servers themselves are configured in the terminal.
 - Maintain private persistent memory for each agent.
 - Maintain a global **Workspace Memory** automatically available to all current and future agents.
 - Create and manage tasks in a Kanban board.
@@ -24,6 +23,8 @@ The interface should make it easy to:
 - Respond to questions/decision requests from Claude inside the agent side sheet.
 - Get a visible notification ping when an agent needs human attention.
 - Toggle notification sounds on/off.
+
+Behind the interface, the system must run real Claude Code processes in isolated git worktrees, survive a crash or a restart, and land finished work on a branch. Section 19 defines that runtime. It is the part that must work first.
 
 ---
 
@@ -185,9 +186,12 @@ Use these core statuses:
 
 ```text
 idle
+queued
 working
 blocked
 ```
+
+`queued` means the task is assigned but no runtime slot is free.
 
 Do **not** use "in meeting" as an agent status.
 
@@ -203,7 +207,7 @@ agent.roomId = "meeting_auth_architecture"
 ## Suggested agent data shape
 
 ```ts
-type AgentStatus = "idle" | "working" | "blocked"
+type AgentStatus = "idle" | "queued" | "working" | "blocked"
 
 interface Agent {
   id: string
@@ -213,6 +217,7 @@ interface Agent {
   status: AgentStatus
 
   currentTaskId?: string
+  currentSessionId?: string
   roomId: string
 
   needsAttention: boolean
@@ -384,6 +389,8 @@ After submitting:
 
 # 6. Rooms View
 
+**V2.** Rooms and meetings come after the human-agent execution loop works. See section 25.
+
 Rooms are virtual spaces containing agents.
 
 There is always one default room:
@@ -422,6 +429,8 @@ Unless an agent is in another meeting, they belong to the Main Room.
 ---
 
 # 7. Meetings
+
+**V2.** See section 25 for the reasons.
 
 Clicking `+ Meeting` opens a dialog.
 
@@ -884,7 +893,7 @@ Every new hire automatically receives **Workspace Memory** in addition to their 
 │ ☐ Slack                                                      │
 │ ☐ Figma                                                      │
 │                                                              │
-│                         [Manage MCP Servers]                  │
+│  MCP servers are configured in the terminal.                 │
 │                                                              │
 │ Memory                                                       │
 │ ✓ Workspace Memory will be inherited automatically           │
@@ -901,7 +910,7 @@ agent.status = idle
 agent.roomId = main_room
 
 agent.skills = selectedSkillIds
-agent.allowedMcpServers = selectedMcpServerIds
+agent.allowedMcpServers = selectedMcpServerNames
 
 agent.privateMemory = new empty persistent memory namespace
 agent.workspaceMemoryAccess = enabled
@@ -1115,139 +1124,106 @@ At runtime, the Context Builder loads only skills assigned to that agent.
 
 ---
 
-# 16. Global MCP Server Pool
+# 16. MCP Servers (Read-Only in the Web UI)
 
-MCP servers are also managed globally, while permission to use them is configured per agent.
+MCP servers are **not** managed from the web UI.
 
-The UI must support:
+They are configured once, in the terminal, using the normal Claude Code commands:
 
-- Create MCP server
-- Edit MCP server
-- Remove MCP server
-- Enable/disable server globally
-- Test connection
-- Assign/unassign server access to agents
-- View which agents are allowed to use a server
+```bash
+claude mcp add github ...
+claude mcp add neon ...
+claude mcp list
+```
+
+Agent Office reads that configuration and treats it as the global pool.
+
+The web UI can only:
+
+- List the available MCP servers.
+- Grant or revoke a server for one agent.
+- Show which agents are allowed to use a server.
+
+The web UI must **not**:
+
+- Create an MCP server.
+- Edit an MCP server.
+- Delete an MCP server.
+- Store MCP credentials.
+- Test a connection.
+
+Reason: credentials stay in the user's own machine configuration. The application never holds an MCP secret, so there is nothing extra to encrypt, back up, or leak.
+
+## Reading the pool
+
+Read the servers the terminal already configured. Cache the parsed result and refresh it on demand.
+
+```text
+~/.claude.json  and  project .mcp.json
+        ↓
+   parse server list
+        ↓
+   global MCP pool (read-only)
+        ↓
+   per-agent allow list (stored in Postgres)
+```
+
+Show a `[Refresh]` action, not an `[Add]` action.
 
 ## MCP Servers View
 
 ```text
 ┌──────────────────────────────────────────────────────────────────────────────────────────┐
-│ MCP SERVERS                                                     [+ Add MCP Server]       │
+│ MCP SERVERS                          Managed in the terminal · read only     [Refresh]   │
 │                                                                                          │
 │ ┌──────────────────────────────────────────────────────────────────────────────────────┐ │
-│ │ ● GitHub                                                   Enabled · 4 agents        │ │
-│ │ HTTP · OAuth                                                                     │ │
-│ │                                                       [Test] [Edit]                  │ │
+│ │ github                                                     http · 4 agents           │ │
 │ └──────────────────────────────────────────────────────────────────────────────────────┘ │
 │                                                                                          │
 │ ┌──────────────────────────────────────────────────────────────────────────────────────┐ │
-│ │ ● Neon                                                     Enabled · 2 agents        │ │
-│ │ HTTP · OAuth                                                                     │ │
-│ │                                                       [Test] [Edit]                  │ │
+│ │ neon                                                       http · 2 agents           │ │
 │ └──────────────────────────────────────────────────────────────────────────────────────┘ │
 │                                                                                          │
 │ ┌──────────────────────────────────────────────────────────────────────────────────────┐ │
-│ │ ○ Local Browser MCP                                         Disabled · 0 agents       │ │
-│ │ stdio                                                                            │ │
-│ │                                                       [Test] [Edit]                  │ │
+│ │ slack                                                      stdio · 0 agents          │ │
 │ └──────────────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                          │
+│ To add or remove a server, run `claude mcp add` in the terminal, then press Refresh.     │
 └──────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Create / Edit MCP Server
+## Per-agent access
 
-Support the connection/configuration types required by the runtime.
-
-Conceptual UI:
-
-```text
-┌──────────────────────────────────────────────────────────────┐
-│ Add MCP Server                                         [×]  │
-│                                                              │
-│ Name                                                         │
-│ [ GitHub                                                  ] │
-│                                                              │
-│ Transport                                                    │
-│ [ HTTP ▼ ]                                                   │
-│                                                              │
-│ URL / Command                                                │
-│ [ https://...                                             ] │
-│                                                              │
-│ Authentication                                               │
-│ [ OAuth ▼ ]                                                  │
-│                                                              │
-│ Credentials / environment                                    │
-│ [ Configure securely...                                   ] │
-│                                                              │
-│ Enabled                                                      │
-│ [✓]                                                          │
-│                                                              │
-│ Agent access                                                 │
-│ ☑ Alex                                                       │
-│ ☑ Maya                                                       │
-│ ☐ Sam                                                        │
-│                                                              │
-│                          [Test Connection] [Save MCP Server] │
-└──────────────────────────────────────────────────────────────┘
-```
-
-Sensitive MCP credentials must **not** be exposed to Claude as raw prompt text.
-
-Store secrets using the app's server-side secret mechanism and provide only the runtime connection capability.
-
-Suggested shape:
+Only the allow list is application state.
 
 ```ts
-type McpTransport = "stdio" | "http" | "sse"
-
-interface McpServer {
-  id: string
-  name: string
-
-  transport: McpTransport
-
-  command?: string
-  args?: string[]
-  url?: string
-
-  authType?: "none" | "bearer" | "oauth" | "custom"
-
-  enabled: boolean
-
-  // Reference to encrypted/server-side secret storage.
-  credentialRef?: string
-
-  createdAt: string
-  updatedAt: string
+interface McpServerRef {
+  name: string          // key from the terminal configuration
+  transport: "stdio" | "http" | "sse"
 }
 
 interface AgentMcpPermission {
   agentId: string
-  mcpServerId: string
+  mcpServerName: string
   allowed: boolean
 }
 ```
 
-At runtime:
+An agent never gains access to a newly configured server automatically. Access is explicit per agent.
 
-```text
-Global MCP Pool
-       │
-       ├── GitHub
-       ├── Neon
-       ├── Slack
-       └── Figma
-              │
-       permission filter
-              │
-              ▼
-         Agent runtime
+## Enforcement at spawn time
+
+Write a per-agent MCP configuration file into the agent's runtime directory. Pass it to the process and forbid every other source.
+
+```bash
+claude --mcp-config .agent-office/runtime/<agent>/mcp.json \
+       --strict-mcp-config \
+       ...
 ```
 
-An agent must never automatically gain access to a newly created MCP server.
+`--strict-mcp-config` makes the passed file the only source. Without it the process inherits every server the user configured, and the per-agent allow list means nothing.
 
-Access is explicit per agent.
+If a stored allow list names a server that no longer exists in the terminal configuration, mark it `missing` in the UI. Do not fail the spawn.
 
 ---
 
@@ -1614,7 +1590,7 @@ The Agent Detail Sheet should have a dedicated configuration tab:
                                               │ ☐ Slack                                     │
                                               │ ☐ Figma                                     │
                                               │                                             │
-                                              │ [Manage global MCP servers]                 │
+                                              │ MCP list is read-only. Configure in terminal.│
                                               │                                             │
                                               │                              [Save Changes] │
                                               └─────────────────────────────────────────────┘
@@ -1626,7 +1602,261 @@ If an MCP is removed from an agent while a task is running, revoke it for subseq
 
 ---
 
-# 19. Recommended Overall Interaction
+# 19. Execution Runtime
+
+This is the core of the system. Everything else is a view over it.
+
+An agent is a persistent database record. A Claude Code session is disposable. One agent uses many sessions over its life.
+
+```text
+Agent  (persistent)
+├── identity, role, instructions
+├── private memory
+├── assigned skills
+├── allowed MCP servers
+│
+└── Runtime  (disposable)
+    ├── git worktree
+    ├── task branch
+    ├── working directory
+    ├── OS process
+    ├── Claude session id
+    └── process status
+```
+
+## 19.1 Three layers
+
+```text
+PRODUCT UI          agents, tasks, decisions, notifications
+      ↓
+ORCHESTRATION CORE  scheduler, lifecycle, decision routing, context builder
+      ↓
+EXECUTION RUNTIME   worktree, branch, process, session, streaming
+```
+
+Keep the UI layer free of process handling. Keep the runtime layer free of product concepts.
+
+## 19.2 How Claude is started
+
+Start the Claude Code CLI as a child process in headless streaming mode.
+
+```bash
+claude \
+  --print \
+  --output-format stream-json \
+  --input-format stream-json \
+  --include-partial-messages \
+  --verbose \
+  --model <model> \
+  --permission-mode <mode> \
+  --mcp-config <runtime>/mcp.json \
+  --strict-mcp-config
+```
+
+Resume an existing session with:
+
+```bash
+claude --resume <claude_session_id> ...
+```
+
+Prompts go to stdin as JSON. Events come from stdout as one JSON object per line.
+
+This is the same approach Vibe Kanban uses, verified in its shipped binary and its SQLite schema. Prefer it over the Claude Agent SDK for the first version: the CLI is the surface the user already runs, and its session files on disk are inspectable when something goes wrong.
+
+## 19.3 Git isolation
+
+Two agents must never share a working tree.
+
+```text
+repository
+│
+├── developer working tree
+│
+├── .agent-office/worktrees/
+│   ├── TASK-142/        branch agent-office/TASK-142
+│   ├── TASK-143/        branch agent-office/TASK-143
+│   └── TASK-146/        branch agent-office/TASK-146
+│
+└── .agent-office/config/   branch agent-office/config
+    └── .agent-office/skills/
+```
+
+One worktree per **task**, not per agent. A task is the unit of work, it holds the branch, and it outlives the agent that started it. If the agent is fired, the worktree and branch stay, and another agent attaches to them.
+
+The configuration worktree is separate again. Skill files are written and committed there. Never touch the developer's index. Never touch an agent's index.
+
+```bash
+git add .agent-office/skills/    # only these paths
+```
+
+Never `git add -A`.
+
+## 19.4 What survives
+
+```text
+Claude session dies, rotates, or the machine reboots
+        ↓
+worktree survives
+branch survives
+uncommitted files survive
+task survives
+memory survives
+        ↓
+a new Claude session attaches to the same worktree
+```
+
+## 19.5 Session persistence
+
+Persist the Claude session id. Without it a crash loses the conversation and the work restarts from nothing.
+
+Read the id from the first `stream-json` event of a run and write it immediately, not at the end.
+
+```ts
+interface AgentSession {
+  id: string
+  agentId: string
+  workspaceId: string        // the task worktree
+  claudeSessionId?: string   // from the runtime, may be null before the first event
+  cwd: string
+  boundVia: "spawn" | "resume" | "manual"
+  status: "running" | "completed" | "failed" | "killed"
+  exitCode?: number
+  startedAt: string
+  completedAt?: string
+}
+```
+
+Record one row per **run**, not one row per agent. A task that is answered, resumed, and answered again produces several runs against one Claude session id.
+
+Also store, per run:
+
+```text
+before_head_commit
+after_head_commit
+```
+
+This gives an exact diff for the run, and it survives the process.
+
+On startup, reconcile: any session row marked `running` whose process is gone becomes `failed`. Then offer resume.
+
+## 19.6 The execution loop
+
+```text
+User assigns task
+        ↓
+Scheduler checks concurrency slots
+        ↓
+Create or reuse the task worktree and branch
+        ↓
+Build context
+        ↓
+Spawn or resume Claude Code
+        ↓
+Persist the Claude session id on the first event
+        ↓
+Stream events → activity, files, status
+        ↓
+        ├── finished → commit → task Done
+        │
+        └── needs a human
+                ↓
+          decision_required in Postgres
+                ↓
+          WebSocket → bell → UI
+                ↓
+          human answers
+                ↓
+          write the answer to the same process stdin,
+          or resume the session with the answer
+                ↓
+          Claude continues
+```
+
+## 19.7 Asking the human
+
+`decision_required` is not a native Claude Code concept. Build it.
+
+Give every agent one internal MCP tool:
+
+```text
+ask_human(question, options?, urgency)
+```
+
+The tool call writes a `DecisionRequest` row, sets the agent to `blocked`, raises an attention event, and does not return until the human answers. The agent is then genuinely waiting, and the whole loop stays inside one session.
+
+The permission prompt is the second source. When the runtime asks to use a tool the agent is not allowed to use, surface it in the same inbox.
+
+## 19.8 Concurrency
+
+```text
+interface WorkspaceRuntimePolicy {
+  maxConcurrentAgents: number
+  idleRuntimeTimeoutMinutes: number
+}
+
+interface AgentRuntimePolicy {
+  model: string
+  maxTurnsPerTask?: number
+  permissionMode: string
+}
+```
+
+An idle agent runs no process and costs nothing. Start a process only when there is work.
+
+If more tasks are assigned than there are slots, agents queue.
+
+```text
+WORKING   Alex, Maya, Sam
+QUEUED    Emma, Jordan
+```
+
+Add `queued` to the agent statuses:
+
+```ts
+type AgentStatus = "idle" | "queued" | "working" | "blocked"
+```
+
+Room stays a separate property.
+
+Do not implement dollar budgets. Concurrency and turn limits are enough, and they are the only limits that can be enforced before the money is spent.
+
+## 19.9 Landing the work
+
+A task is not Done because Claude stopped talking.
+
+```text
+Claude finishes
+        ↓
+commit on the task branch
+        ↓
+push
+        ↓
+open a pull request   (or merge directly, per project setting)
+        ↓
+record the merge
+        ↓
+task Done
+```
+
+Store the result:
+
+```ts
+interface TaskMerge {
+  taskId: string
+  type: "direct" | "pr"
+  targetBranch: string
+  mergeCommit?: string
+  prNumber?: number
+  prUrl?: string
+  prStatus?: "open" | "merged" | "closed"
+}
+```
+
+A Done task with an orphan branch is an unfinished task. Show the branch and the pull request in the task detail view.
+
+---
+
+# 20. Recommended Overall Interaction
 
 Example user workflow:
 
@@ -1677,7 +1907,7 @@ Example user workflow:
 
 ---
 
-# 20. Core Entity Relationships
+# 21. Core Entity Relationships
 
 ```text
 Workspace
@@ -1686,11 +1916,15 @@ Workspace
 │     │
 │     ├── currentTask
 │     ├── room
-│     └── Claude session/runtime
+│     └── current Session (disposable)
 │
 ├── Tasks
 │     │
-│     └── assigned Agent
+│     ├── assigned Agent
+│     ├── worktree + branch
+│     ├── Sessions
+│     │     └── Runs (process, exit code, before/after commit)
+│     └── Merge (direct or pull request)
 │
 ├── Rooms
 │     │
@@ -1712,7 +1946,7 @@ Workspace
 │     │
 │     └── assigned to Agents
 │
-├── MCP Server Pool
+├── MCP pool (read-only)
 │     │
 │     └── permissioned to Agents
 │
@@ -1731,7 +1965,7 @@ Workspace
 
 ---
 
-# 21. Suggested Frontend State Model
+# 22. Suggested Frontend State Model
 
 ```ts
 interface WorkspaceState {
@@ -1743,7 +1977,7 @@ interface WorkspaceState {
   meetings: Meeting[]
 
   skills: Skill[]
-  mcpServers: McpServer[]
+  mcpServers: McpServerRef[]
 
   workspaceMemory: WorkspaceMemory[]
   agentMemory: MemoryRecord[]
@@ -1778,6 +2012,10 @@ interface Task {
 
   progressSummary?: string
 
+  worktreePath?: string
+  branch?: string
+  merge?: TaskMerge
+
   createdAt: string
   startedAt?: string
   completedAt?: string
@@ -1799,7 +2037,7 @@ interface Room {
 
 ---
 
-# 22. Important Behavior Rules
+# 23. Important Behavior Rules
 
 ### Rule 1 — There is always a Main Room
 
@@ -1898,9 +2136,9 @@ Agent
 
 Do not duplicate the skill contents into each agent record.
 
-### Rule 10 — MCP servers are global; access is per agent
+### Rule 10 — MCP servers are terminal-managed; access is per agent
 
-Creating an MCP server does not grant it to all agents.
+A server configured in the terminal does not grant it to all agents.
 
 ```text
 MCP Pool
@@ -1922,10 +2160,30 @@ Starting a fresh Claude Code session must not erase the agent's persistent priva
 
 Firing removes an agent from active work but preserves historical records unless permanent deletion is explicitly requested.
 
+### Rule 14 — One worktree per task
+
+Two agents never share a working tree. The worktree and the branch belong to the task, not to the agent, and survive the agent being fired.
+
+### Rule 15 — The Claude session id is persisted immediately
+
+Write it on the first event of a run, not at the end. Without it a crash loses the conversation.
+
+### Rule 16 — An idle agent runs no process
+
+A process starts only when there is work. Concurrency is limited by slots, and extra agents queue.
+
+### Rule 17 — Done means landed
+
+A task is Done only when its branch is merged, or a pull request is open and recorded. A Done task with an orphan branch is unfinished.
+
+### Rule 18 — MCP servers are configured in the terminal
+
+The web UI lists them and grants them per agent. It never creates, edits or deletes one, and it never stores a credential.
+
 
 ---
 
-# 23. Suggested Realtime Events
+# 24. Suggested Realtime Events
 
 Use WebSocket/SSE events between backend and browser.
 
@@ -1941,6 +2199,14 @@ task.assigned
 task.started
 task.blocked
 task.completed
+
+session.started
+session.resumed
+session.ended
+runtime.event
+worktree.created
+task.committed
+task.pr_opened
 
 meeting.created
 meeting.message
@@ -1958,10 +2224,7 @@ skill.deleted
 agent.skill_assigned
 agent.skill_removed
 
-mcp.created
-mcp.updated
-mcp.deleted
-mcp.connection_tested
+mcp.pool_refreshed
 agent.mcp_granted
 agent.mcp_revoked
 
@@ -1997,55 +2260,93 @@ sound → ping
 
 ---
 
-# 24. MVP Scope
+# 25. Release Scope
 
-Implement these first:
+The first version must prove one complete loop, end to end, reliably. Nothing else matters until it works.
 
-- Agent sidebar
-- Rooms view
-- Main Room
-- Create meeting
-- Meeting room
-- Hire agent
-- Fire agent with safe archival flow
-- Global Skill Catalog UI
-- Create/edit/delete skills
-- Assign/unassign skills per agent
-- Global MCP Server Pool UI
-- Create/edit/delete/test MCP servers
-- Grant/revoke MCP access per agent
-- Workspace Memory UI
-- Automatic Workspace Memory inheritance for new hires
-- Per-agent private persistent memory
-- Memory retrieval/context builder
-- Session checkpoint + rotation design
-- Agent side sheet with Overview / Memory / Skills & MCP
-- Tasks/Kanban view
-- Create task
-- Assign task
-- Backlog → In Progress automation
-- In Progress → Blocked automation
-- Blocked → In Progress after decision
-- In Progress → Done
-- Claude decision request UI
-- Bell notification count
-- Sound on/off
+## V1 — the human-agent execution loop
+
+```text
+ 1. Hire an agent
+ 2. Fire an agent
+ 3. Create a task
+ 4. Assign the task
+ 5. Create the task worktree and branch
+ 6. Spawn Claude Code
+ 7. Persist the Claude session id
+ 8. Stream status and activity into the UI
+ 9. Claude asks the human a question
+10. Agent and task become blocked
+11. Bell, inbox, sound
+12. Human answers in the side sheet
+13. Claude resumes in the same session
+14. Claude finishes
+15. Commit, push, pull request
+16. Task becomes Done
+```
+
+Plus the minimum surface that loop needs:
+
+- Agent sidebar with idle / queued / working / blocked
+- Agent side sheet, Overview tab only
+- Tasks Kanban with Backlog, In Progress, Blocked, Done
+- Concurrency limit and a queue
 - Realtime UI updates
+- Crash recovery: reconcile orphan sessions on startup, then resume
 
-Do **not** make the first version overly complicated with:
+## V1.1
+
+```text
+Skill Catalog
+Per-agent skill assignment
+Read-only MCP list and per-agent access
+Basic private agent memory
+```
+
+## V1.2
+
+```text
+Workspace Memory
+Memory retrieval
+Context builder
+Session checkpointing
+Session rotation
+```
+
+## V2
+
+```text
+Rooms
+Meetings
+Agent-to-agent communication
+Meeting summaries
+```
+
+Meetings look simple in the UI and are expensive in the runtime. They raise questions the first version cannot answer: who speaks first, how many rounds, who decides the meeting is over, can agents use tools while talking, does a meeting interrupt a running task, how does the meeting result reach the task context, how are conversation loops stopped.
+
+Make `human ↔ agent ↔ task` reliable first. Build `agent ↔ agent` on top of it.
+
+## Later
+
+```text
+Task dependencies
+Automatic code review
+Multiple repositories
+Advanced scheduling
+Cost analytics
+```
+
+## Not in any near version
 
 - multiple concurrent tasks per agent
-- complex workforce scheduling
 - agent performance scoring
-- payroll/budget simulation
-- sophisticated room permissions
-- arbitrary workflow builders
-
-Those can come later.
+- dollar budgets
+- room permissions
+- workflow builders
 
 ---
 
-# 25. Final Desktop Mock-up
+# 26. Final Desktop Mock-up
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
@@ -2096,48 +2397,73 @@ Those can come later.
 ---
 
 
-# 26. Implementation Plan
+# 27. Implementation Plan
 
-Implement in layers so Claude runtime orchestration is not tightly coupled to UI components.
+Build from the runtime outwards. The runtime, the worktree isolation and the human decision round trip are the foundation. Everything else sits on top.
 
 ## Phase 1 — Core domain and persistence
 
 Implement persistent entities for:
 
 ```text
-Workspace
 Agent
 Task
-Room
-Meeting
+TaskWorktree
+AgentSession
+ExecutionRun
 DecisionRequest
 AttentionEvent
+TaskMerge
 
 Skill
 AgentSkillAssignment
 
-McpServer
 AgentMcpPermission
 
 WorkspaceMemory
 MemoryRecord
 AgentCheckpoint
+
+Room
+Meeting
 ```
+
+`Room` and `Meeting` are V2. Define them last, or leave them out of the first migration.
 
 Create clear service boundaries for:
 
 ```text
+RuntimeService      spawn, resume, stream, kill
+WorktreeService     create, reuse, remove, commit, push
+SchedulerService    slots, queue
 AgentService
 TaskService
-MeetingService
+DecisionService
+AttentionService
 SkillService
 McpService
 MemoryService
-AttentionService
-RuntimeService
+MeetingService      (V2)
 ```
 
-## Phase 2 — Agent lifecycle
+Write `RuntimeService` first and prove it from a script, before any UI exists.
+
+## Phase 2 — Execution runtime
+
+Build this before any UI. Prove it from a script.
+
+1. Create a git worktree and branch for a task.
+2. Spawn the Claude Code CLI in that worktree, headless, streaming.
+3. Read the Claude session id from the first event and persist it.
+4. Parse the event stream into activity, files touched, and status.
+5. Record `before_head_commit` and `after_head_commit` for the run.
+6. Kill the process safely.
+7. Resume the same session with `--resume`.
+8. On startup, mark orphan `running` rows as `failed`.
+
+Write the per-agent `mcp.json` here, and always pass `--strict-mcp-config`.
+
+## Phase 3 — Agent lifecycle
 
 Implement:
 
@@ -2155,31 +2481,66 @@ Hiring must:
 3. Assign chosen MCP permissions.
 4. Create private memory namespace.
 5. Automatically enable Workspace Memory.
-6. Put agent in Main Room.
-7. Initialize runtime only when needed.
+6. Leave the agent idle with no process running.
 
 Firing must:
 
-1. Stop active runtime safely.
-2. Remove agent from active rooms/meetings.
-3. Handle unfinished tasks.
-4. Revoke runtime MCP access.
-5. Archive private memory by default.
-6. Preserve historical audit/task/meeting records.
+1. Stop the active runtime safely.
+2. Handle unfinished tasks.
+3. Archive private memory by default.
+4. Preserve task history, decisions, audit events, branches and commits.
 
-## Phase 3 — Global capabilities
+Firing must not delete a task worktree or branch. The work belongs to the task, not the agent.
 
-Implement repository-backed Skill Catalog management.
+## Phase 4 — Task loop and landing
 
-Implement global MCP Pool management with secret-safe credential storage and per-agent permissioning.
+```text
+Backlog
+  ↓ assign
+In Progress        worktree + branch + process
+  ↓ needs a human
+Blocked
+  ↓ answer
+In Progress
+  ↓ finished
+commit → push → pull request
+  ↓
+Done
+```
 
-These are global workspace resources; agent records store assignments/references, not copies.
+Add the scheduler here: a concurrency limit, a queue, and the `queued` status.
 
-## Phase 4 — Memory system
+A task is Done only when its branch has landed or a pull request is open and recorded.
+
+## Phase 5 — Human attention loop
+
+Implement:
+
+```text
+The ask_human MCP tool
+Decision requests
+Agent blockers
+Bell count
+Attention inbox
+Sound toggle
+One sound per new event
+Deep link to the correct side sheet
+Answer routed back into the same session
+```
+
+## Phase 6 — Skills and MCP access
+
+Implement the repository-backed Skill Catalog in its own configuration worktree.
+
+Implement the read-only MCP pool: parse the terminal configuration, store only the per-agent allow list, and write a per-agent `mcp.json` at spawn time.
+
+These are global resources. Agent records store references, never copies.
+
+## Phase 7 — Memory system
 
 This is a first-class part of the product, not a later chat-history feature.
 
-Implement **per-person memory management** for every agent:
+Implement **per-agent private memory**:
 
 ```text
 private persistent memory
@@ -2211,69 +2572,38 @@ agent identity
 + relevant workspace memory
 + relevant private agent memory
 + current task
-+ relevant task/meeting state
++ relevant task state
 + recent messages
 ```
 
 Do not equate Claude session history with memory.
 
-## Phase 5 — Tasks and runtime
-
-Implement task lifecycle and runtime dispatch:
-
-```text
-Backlog
-  ↓ assign
-In Progress
-  ↓ needs human decision
-Blocked
-  ↓ answer
-In Progress
-  ↓ finished
-Done
-```
-
-Connect each active task to an agent runtime.
-
-## Phase 6 — Rooms and meetings
-
-Implement Main Room, temporary meeting rooms, participant movement, transcript storage, decisions/action-item extraction, and return participants to Main Room.
-
-## Phase 7 — Human attention loop
-
-Implement:
-
-```text
-Decision requests
-Agent blockers
-Bell count
-Attention inbox
-Sound toggle
-One-time sound ping per new event
-Deep-link/open correct side sheet
-```
-
-## Phase 8 — Context/session lifecycle
+## Phase 8 — Context and session rotation
 
 Track approximate context usage.
 
-Before a session becomes too large/noisy:
+Before a session becomes too large or noisy:
 
 ```text
 checkpoint
 → extract durable memories
-→ persist task/runtime state
-→ archive session
-→ create fresh session
-→ reconstruct context
+→ persist task and runtime state
+→ archive the session
+→ start a fresh session in the same worktree
+→ rebuild context
 ```
 
-The persistent **agent** must survive replacement of the underlying Claude session.
+The persistent agent, the worktree and the branch all survive the replacement of the Claude session.
+
+## Phase 9 — Rooms and meetings (V2)
+
+Implement Main Room, temporary meeting rooms, participant movement, transcript storage, decision and action-item extraction, and the return of participants to the Main Room.
+
+Do not start this before Phases 2 to 5 are reliable.
 
 ---
 
-
-# 27. Backup, Persistence & Disaster Recovery
+# 28. Backup, Persistence & Disaster Recovery
 
 The system must be recoverable if the local machine/VPS is lost, corrupted, or rebuilt.
 
@@ -2293,11 +2623,11 @@ Runtime state
 ├── private agent memories
 ├── Workspace Memory
 ├── skill assignments
-├── MCP definitions / permissions
+├── MCP permissions
 └── audit/activity state
 ```
 
-## 27.1 Skill persistence
+## 28.1 Skill persistence
 
 Skills live inside the Git repository and Git is their source of truth.
 
@@ -2363,7 +2693,7 @@ git add -A
 
 because agents or the human developer may have unrelated working-tree changes.
 
-## 27.2 Daily repository sync job
+## 28.2 Daily repository sync job
 
 Run at least once per day.
 
@@ -2402,7 +2732,7 @@ Expose backup status in Settings/System Status.
 
 ---
 
-## 27.3 PostgreSQL backups
+## 28.3 PostgreSQL backups
 
 Postgres contains the operational state required to reconstruct the office.
 
@@ -2416,7 +2746,6 @@ The backup must include enough state to restore:
 - per-agent private memory
 - Workspace Memory
 - skill assignments
-- MCP server definitions
 - MCP permissions
 - checkpoints
 - application settings
@@ -2457,7 +2786,7 @@ inside a Git repository.
 
 ---
 
-## 27.4 PostgreSQL dump job
+## 28.4 PostgreSQL dump job
 
 Run a database backup daily.
 
@@ -2519,7 +2848,7 @@ interface BackupRecord {
 
 ---
 
-## 27.5 Backup retention
+## 28.5 Backup retention
 
 Do not keep unlimited daily database dumps.
 
@@ -2543,7 +2872,7 @@ and add tiered retention later.
 
 ---
 
-## 27.6 Recovery target
+## 28.6 Recovery target
 
 The backup design should allow rebuilding the complete Agent Office from:
 
@@ -2605,39 +2934,34 @@ The agent should continue from persistent state.
 
 ---
 
-## 27.7 Secrets backup
+## 28.7 Secrets backup
 
-MCP credentials and application secrets are separate from normal Postgres/Git backup.
+Agent Office stores no MCP credential.
 
-Preferred model:
+MCP servers are configured in the terminal, so their credentials live in the user's own Claude configuration and in the operating system, outside this application.
+
+Back up:
 
 ```text
-MCP record in Postgres
-{
-  name: "GitHub",
-  url: "...",
-  authType: "oauth",
-  credentialRef: "secret/github/alex"
-}
+~/.claude.json
+project .mcp.json
 ```
 
-while the actual credential lives in encrypted secret storage.
+with the machine's normal file backup, or re-create them with `claude mcp add` after a rebuild.
 
-Back up the secret store using whatever encrypted mechanism the deployment environment supports.
-
-A restore is not complete until both:
+The database holds only names and per-agent allow lists. A restore therefore needs:
 
 ```text
 database
 +
-secret store
+terminal MCP configuration
 ```
 
-have been recovered.
+If the terminal configuration is missing after a restore, the affected agents show their MCP servers as `missing` and keep working without them.
 
 ---
 
-## 27.8 Backup UI
+## 28.8 Backup UI
 
 Add a small system/settings view:
 
@@ -2673,7 +2997,7 @@ and trigger the normal notification system.
 
 ---
 
-## 27.9 Scheduled maintenance job
+## 28.9 Scheduled maintenance job
 
 The daily maintenance job can coordinate several persistence tasks:
 
@@ -2710,7 +3034,7 @@ The UI should show partial failure clearly.
 
 ---
 
-## 27.10 Backup principle
+## 28.10 Backup principle
 
 The system must assume:
 
@@ -2726,7 +3050,7 @@ A successful disaster-recovery test should prove that a completely fresh deploym
 
 ---
 
-# 28. Product Principle
+# 29. Product Principle
 
 The interface should feel like managing a small team, not managing AI prompts.
 
