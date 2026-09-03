@@ -8,13 +8,33 @@ from models.agent import Agent
 from models.mcp import AgentMcpPermission
 from runtime.mcp_config import McpServerRef
 
+_POOL_CACHE: dict[tuple[Path, ...], tuple[tuple[float, ...], list[McpServerRef]]] = {}
+
 
 def default_pool_paths(repo_root: Path) -> list[Path]:
     return [Path.home() / ".claude.json", repo_root / ".mcp.json"]
 
 
 def read_mcp_pool(paths: list[Path]) -> list[McpServerRef]:
-    """Read-only (README 16): the terminal owns server definitions, we only ever list and reference them by name."""
+    """Read-only (README 16): the terminal owns server definitions. Cached and refreshed only when a file's mtime changes, per 16's "cache and refresh on demand"."""
+    key = tuple(paths)
+    mtimes = tuple(path_mtime(path) for path in paths)
+    cached = _POOL_CACHE.get(key)
+    if cached is not None and cached[0] == mtimes:
+        return cached[1]
+    servers = parse_pool(paths)
+    _POOL_CACHE[key] = (mtimes, servers)
+    return servers
+
+
+def path_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except FileNotFoundError:
+        return 0.0
+
+
+def parse_pool(paths: list[Path]) -> list[McpServerRef]:
     servers: dict[str, McpServerRef] = {}
     for path in paths:
         servers.update(read_pool_file(path))

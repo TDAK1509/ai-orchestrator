@@ -20,3 +20,8 @@ def write_mcp_config(runtime_dir: Path, allowed_servers: list[McpServerRef], int
     config_path.write_text(json.dumps({"mcpServers": servers}, indent=2))
     os.chmod(config_path, 0o600)
     return config_path
+
+
+def remove_mcp_config(runtime_dir: Path) -> None:
+    """Deletes the credentials a run needed, not just revokes DB access to them: nothing should sit on disk once nothing is using it."""
+    (runtime_dir / "mcp.json").unlink(missing_ok=True)

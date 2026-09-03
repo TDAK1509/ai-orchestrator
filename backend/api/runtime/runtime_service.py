@@ -17,7 +17,7 @@ from models.session import AgentSession, BoundVia, ExecutionRun, RunStatus
 from models.worktree import TaskWorktree
 
 from . import process, worktree
-from .mcp_config import McpServerRef, write_mcp_config
+from .mcp_config import McpServerRef, remove_mcp_config, write_mcp_config
 from .prompt import build_follow_up_message
 from .stream_parser import DomainEvent, parse_stream_line
 
@@ -68,7 +68,7 @@ class RuntimeService:
 
     async def _start_run(self, agent, task_worktree, allowed_servers, resume_session, initial_message, env) -> ExecutionRun:
         internal_servers = self._build_internal_servers(agent, task_worktree)
-        mcp_config_path = write_mcp_config(self._agent_runtime_dir(agent), allowed_servers, internal_servers)
+        mcp_config_path = write_mcp_config(self._agent_runtime_dir(agent.id), allowed_servers, internal_servers)
         _agent_session, run = await self._open_session_and_run(agent, task_worktree, resume_session)
         await self._launch_process(run, task_worktree, mcp_config_path, resume_session, initial_message, env)
         return run
@@ -99,8 +99,8 @@ class RuntimeService:
         await managed.send_line(initial_message)
         await managed.close_stdin()
 
-    def _agent_runtime_dir(self, agent) -> Path:
-        return self.settings.runtime_root / str(agent.id)
+    def _agent_runtime_dir(self, agent_id: uuid.UUID) -> Path:
+        return self.settings.runtime_root / str(agent_id)
 
     def _open_agent_session(self, agent, task_worktree) -> AgentSession:
         session = AgentSession(
@@ -187,6 +187,7 @@ class RuntimeService:
         run.status = self._resolve_final_status(run, exit_code)
         run.after_head_commit = await worktree.read_head_commit(Path(agent_session.cwd))
         self._processes.pop(run.id, None)
+        remove_mcp_config(self._agent_runtime_dir(agent_session.agent_id))
         await self.commit()
 
     def _resolve_final_status(self, run: ExecutionRun, exit_code: int) -> RunStatus:

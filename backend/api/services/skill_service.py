@@ -16,7 +16,7 @@ SKILLS_RELATIVE_DIR = ".agent-office/skills"
 
 async def create_skill(db, config_worktree: Path, name: str, description: str | None, instructions: str) -> Skill:
     """Flushes before writing files: created_at is a Python-side default that only exists after the INSERT, and metadata.json needs the real value."""
-    slug = slugify(name)
+    slug = require_nonempty_slug(name)
     skill = Skill(id=uuid.uuid4(), slug=slug, name=name, description=description, repository_path=f"{SKILLS_RELATIVE_DIR}/{slug}")
     db.add(skill)
     await db.flush()
@@ -49,10 +49,19 @@ def resolve_instructions(path: Path, instructions: str | None) -> str:
 
 
 async def delete_skill(db, config_worktree: Path, skill: Skill) -> None:
+    """DB changes are flushed (and so validated) before Git is touched: a failure here must not leave the catalog file gone while the row survives."""
+    await delete_skill_assignments(db, skill.id)
+    await db.delete(skill)
+    await db.flush()
     remove_skill_files(skill_dir(config_worktree, skill.slug))
     await commit_skill_change(config_worktree, f'agent-office: remove skill "{skill.name}"')
-    await db.delete(skill)
     await db.commit()
+
+
+async def delete_skill_assignments(db, skill_id: uuid.UUID) -> None:
+    query = select(AgentSkillAssignment).where(AgentSkillAssignment.skill_id == skill_id)
+    for assignment in (await db.execute(query)).scalars():
+        await db.delete(assignment)
 
 
 async def assign_skill(db, agent: Agent, skill: Skill) -> AgentSkillAssignment:
@@ -82,6 +91,8 @@ async def list_assigned_agents(db, skill_id: uuid.UUID) -> list[Agent]:
 
 
 def skill_dir(config_worktree: Path, slug: str) -> Path:
+    if not slug:
+        raise ValueError("skill slug must not be empty: it would resolve to the catalog directory itself")
     return config_worktree / SKILLS_RELATIVE_DIR / slug
 
 
@@ -113,6 +124,14 @@ def read_instructions(path: Path) -> str:
 
 async def commit_skill_change(config_worktree: Path, message: str) -> str | None:
     return await worktree_ops.commit_paths(config_worktree, [SKILLS_RELATIVE_DIR], message)
+
+
+def require_nonempty_slug(name: str) -> str:
+    """A skill named entirely from punctuation/non-ASCII would slugify to "", and skill_dir("") is the catalog root itself: writing or, worse, deleting "that skill" would touch every skill."""
+    slug = slugify(name)
+    if not slug:
+        raise ValueError(f"skill name {name!r} produces an empty slug; choose a name with at least one letter or digit")
+    return slug
 
 
 def slugify(name: str) -> str:
