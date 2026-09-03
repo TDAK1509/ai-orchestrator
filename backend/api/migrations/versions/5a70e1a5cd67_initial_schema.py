@@ -1,8 +1,8 @@
 """initial schema
 
-Revision ID: f482fcbeb4be
+Revision ID: 5a70e1a5cd67
 Revises: 
-Create Date: 2026-09-03 09:35:19.652013
+Create Date: 2026-09-03 11:10:08.464701
 
 """
 from collections.abc import Sequence
@@ -12,7 +12,7 @@ from alembic import op
 
 import models.base
 
-revision: str = 'f482fcbeb4be'
+revision: str = '5a70e1a5cd67'
 down_revision: str | None = None
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
@@ -27,6 +27,7 @@ def upgrade() -> None:
     sa.Column('status', sa.Enum('IDLE', 'QUEUED', 'WORKING', 'BLOCKED', name='agentstatus', native_enum=False, length=20), nullable=False),
     sa.Column('needs_attention', sa.Boolean(), nullable=False),
     sa.Column('active', sa.Boolean(), nullable=False),
+    sa.Column('queued_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('current_task_id', models.base.GUID(), nullable=True),
     sa.Column('current_agent_session_id', models.base.GUID(), nullable=True),
     sa.Column('id', models.base.GUID(), nullable=False),
