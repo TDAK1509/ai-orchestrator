@@ -3050,7 +3050,374 @@ A successful disaster-recovery test should prove that a completely fresh deploym
 
 ---
 
-# 29. Product Principle
+# 30. Repository Structure
+
+The stack matches the other projects in this workspace: FastAPI, SQLAlchemy, Alembic, asyncpg and Redis on the backend; Vue 3, Vite, Pinia and Tailwind on the frontend.
+
+```text
+ai-orchestrator/
+│
+├── backend/
+│   └── api/
+│       ├── app.py                     FastAPI application, routers, WebSocket mount
+│       ├── pyproject.toml
+│       ├── alembic.ini
+│       ├── migrations/                Alembic revisions
+│       │
+│       ├── models/                    SQLAlchemy tables, one file per aggregate
+│       │   ├── agent.py
+│       │   ├── task.py
+│       │   ├── worktree.py
+│       │   ├── session.py             AgentSession + ExecutionRun
+│       │   ├── decision.py
+│       │   ├── attention.py
+│       │   ├── skill.py
+│       │   ├── mcp.py                 per-agent allow list only
+│       │   ├── memory.py              MemoryRecord + WorkspaceMemory
+│       │   └── merge.py
+│       │
+│       ├── routers/                   HTTP surface, thin, no logic
+│       │   ├── agents.py
+│       │   ├── tasks.py
+│       │   ├── decisions.py
+│       │   ├── skills.py
+│       │   ├── mcp.py
+│       │   ├── memory.py
+│       │   └── events.py              WebSocket /ws
+│       │
+│       ├── services/                  business logic, no HTTP, no process handling
+│       │   ├── agent_service.py
+│       │   ├── task_service.py
+│       │   ├── scheduler_service.py   slots, queue, promotion
+│       │   ├── decision_service.py
+│       │   ├── attention_service.py
+│       │   ├── skill_service.py
+│       │   ├── mcp_service.py
+│       │   └── memory/
+│       │       ├── store.py           write, supersede, archive
+│       │       ├── retrieval.py       hybrid search
+│       │       ├── extraction.py      turn a run into candidate memories
+│       │       ├── consolidation.py   dedupe and supersede
+│       │       └── context_builder.py assemble the prompt context
+│       │
+│       ├── runtime/                   the only place that touches processes and git
+│       │   ├── runtime_service.py     spawn, resume, kill, reconcile
+│       │   ├── process.py             asyncio subprocess, stdin and stdout
+│       │   ├── stream_parser.py       stream-json line to domain event
+│       │   ├── worktree.py            create, reuse, commit, push, remove
+│       │   ├── mcp_config.py          write per-agent mcp.json
+│       │   ├── prompt.py              render the system prompt
+│       │   └── ask_human_mcp.py       the internal MCP server, one tool
+│       │
+│       ├── events/
+│       │   ├── bus.py                 Redis pub/sub fan-out
+│       │   └── schema.py              event payloads, shared with the frontend
+│       │
+│       ├── workers/                   taskiq
+│       │   ├── run_agent.py           owns one Claude process for its lifetime
+│       │   ├── memory_jobs.py         extraction and consolidation
+│       │   └── backup_jobs.py         skill sync, pg_dump, retention
+│       │
+│       └── tests/
+│
+├── frontend/
+│   └── app/
+│       ├── src/
+│       │   ├── views/                 RoomsView, TasksView, SkillsView, McpView, MemoryView
+│       │   ├── components/
+│       │   │   ├── agent/             AgentCard, AgentSheet, DecisionPanel
+│       │   │   ├── task/              KanbanBoard, TaskCard, TaskDetail
+│       │   │   └── shell/             Header, Sidebar, NotificationInbox
+│       │   ├── stores/                Pinia: agents, tasks, memory, attention
+│       │   ├── realtime/socket.ts     one WebSocket, dispatches into the stores
+│       │   └── api/                   generated client
+│       └── package.json
+│
+├── .agent-office/                     runtime and configuration, inside the repo
+│   ├── skills/                        the Skill Catalog, git is the source of truth
+│   ├── worktrees/
+│   │   ├── TASK-142/                  branch agent-office/TASK-142
+│   │   └── TASK-143/
+│   ├── runtime/
+│   │   └── <agent-id>/
+│   │       ├── mcp.json               written at spawn, allow list only
+│   │       └── logs/
+│   └── config/                        the configuration worktree, branch agent-office/config
+│
+└── devops/
+    ├── docker-compose.yml             postgres with pgvector, redis
+    └── render.yaml
+```
+
+Three directories carry the rules:
+
+- `routers/` has no logic. It validates input and calls a service.
+- `services/` has no processes and no git. It is pure business logic over the database.
+- `runtime/` is the only code that spawns a process, parses a stream, or touches git.
+
+---
+
+# 31. How the Business Logic Works
+
+## 31.1 Assigning a task
+
+```text
+POST /tasks/{id}/assign {agentId}
+        │
+routers/tasks.py
+        │
+task_service.assign()
+        ├── task.assigneeId = agent
+        ├── task.status = in_progress
+        └── scheduler_service.request_slot(agent)
+                │
+                ├── no free slot  → agent.status = queued, stop here
+                │
+                └── free slot     → enqueue workers/run_agent
+                                        │
+                          ┌─────────────┴──────────────┐
+                          │  worker: run_agent          │
+                          │                             │
+                          │ 1 worktree.ensure(task)     │
+                          │ 2 mcp_config.write(agent)   │
+                          │ 3 context_builder.build()   │
+                          │ 4 process.spawn()           │
+                          │ 5 read stdout line by line  │
+                          └─────────────┬───────────────┘
+                                        │
+                                  events/bus.py
+                                        │
+                                   WebSocket
+                                        │
+                                    Pinia store
+                                        │
+                                    agent card
+```
+
+One worker owns one process for its whole life. The worker is the only writer of that session's rows. Nothing else may write to that process's stdin.
+
+## 31.2 The event stream
+
+`claude --print --output-format stream-json` writes one JSON object per line. `stream_parser.py` turns each line into a domain event and nothing else.
+
+```text
+stdout line
+     │
+     ├── init            → persist claudeSessionId immediately, then everything else
+     ├── assistant text  → activity entry, agent message
+     ├── tool_use        → activity entry; Edit and Write also record the file
+     ├── tool_result     → activity entry
+     ├── result          → run finished, exit code, token usage
+     └── unknown         → log and ignore, never crash the run
+```
+
+Every event is written to Postgres first, then published to Redis. The WebSocket layer only reads Redis. A browser that reconnects replays from the database, so a dropped socket loses nothing.
+
+## 31.3 The decision round trip
+
+```text
+Claude calls  ask_human(question, options)
+        │
+runtime/ask_human_mcp.py                     the tool does not return yet
+        │
+decision_service.create()
+        ├── DecisionRequest row              status = open
+        ├── agent.status = blocked
+        ├── task.status = blocked
+        └── attention_service.raise()        bell + one sound
+        │
+        ▼
+   the human answers in the side sheet
+        │
+POST /decisions/{id}/answer
+        │
+decision_service.answer()
+        ├── DecisionRequest.status = answered
+        └── release the waiting tool call
+        │
+        ▼
+the tool returns the answer to Claude
+agent.status = working, task.status = in_progress
+Claude continues in the same session
+```
+
+The tool call is what blocks. The process stays alive, so no context is rebuilt and no tokens are re-paid.
+
+If the process died while waiting, the answer is delivered by resuming instead:
+
+```bash
+claude --resume <claudeSessionId> --print ...
+```
+
+with the answer as the next prompt. The stored session id is what makes this possible.
+
+## 31.4 Finishing
+
+```text
+result event, exit code 0
+        │
+worktree.commit(task)
+worktree.push()
+        │
+        ├── project setting = pr      → open a pull request, store number and url
+        └── project setting = direct  → merge into the target branch, store the commit
+        │
+task.status = done
+agent.status = idle
+scheduler_service.release_slot()   → the first queued agent starts
+```
+
+A non-zero exit code sets the run to `failed` and raises an attention event. The worktree and the branch are kept. The human decides whether to retry or discard.
+
+## 31.5 Crash recovery
+
+On startup:
+
+```text
+for every run row with status = running:
+    is the pid alive?
+        yes → re-attach the log reader
+        no  → status = failed, raise an attention event, offer resume
+```
+
+The worktree, the branch, the uncommitted files, the task and the memories are all still there. Resume starts a new run against the stored `claudeSessionId`.
+
+---
+
+# 32. How Memory Is Managed
+
+Memory is database state. The Claude context window is temporary working space. The two are never the same thing.
+
+```text
+                    ┌──────────────────────────┐
+   write path       │      memory_records      │      read path
+                    │  (Postgres + pgvector)   │
+                    └────────────┬─────────────┘
+                                 │
+  run transcript                 │                 context_builder
+        │                        │                        │
+   extraction.py ────────────────┤                        │
+        │                        │                 retrieval.py
+   consolidation.py ─────────────┤                        │
+        │                        │                        │
+   human edits in the UI ────────┘                        ▼
+                                                    system prompt
+```
+
+## 32.1 One table
+
+```sql
+CREATE TABLE memory_records (
+  id             uuid PRIMARY KEY,
+  scope          text NOT NULL,           -- 'workspace' | 'agent' | 'task'
+  agent_id       uuid NULL,               -- null when scope = workspace
+  task_id        uuid NULL,
+  type           text NOT NULL,           -- fact, decision, preference, lesson, ...
+  content        text NOT NULL,
+  embedding      vector(1536),
+  importance     real NOT NULL DEFAULT 0.5,
+  pinned         boolean NOT NULL DEFAULT false,
+  status         text NOT NULL DEFAULT 'active',   -- active | superseded | archived
+  superseded_by  uuid NULL REFERENCES memory_records(id),
+  source_type    text,                    -- human | agent | task | system
+  source_id      text,
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  last_accessed_at timestamptz
+);
+```
+
+Workspace memory and private memory are the same table with a different `scope`. That keeps one retrieval query, one editor, one backup.
+
+## 32.2 The write path
+
+Memory is written at three moments, never continuously.
+
+```text
+1. End of a run
+   The transcript goes to a cheap model with a strict schema:
+   "Return only durable facts. No task narration."
+        ↓
+   candidate memories
+        ↓
+   consolidation.py
+        ├── embed each candidate
+        ├── nearest active memory for this agent
+        │     similarity > 0.92  → update the existing record, do not insert
+        │     contradiction      → new record, old one status = superseded
+        │     otherwise          → insert
+        └── cap: at most N new memories per run
+
+2. Session rotation
+   The checkpoint fields (decisions, discoveries, blockers, files) become
+   memories directly. No model pass, they are already structured.
+
+3. Human edit
+   Anything typed in the UI is source_type = human and importance = 1.0.
+   A human memory is never superseded automatically.
+```
+
+Nothing writes memory during a run. A run that fails halfway leaves no half-truths behind.
+
+## 32.3 The read path
+
+```text
+context_builder.build(agent, task)
+        │
+        ├── agent identity and role instructions
+        ├── assigned skills                       (file contents, not summaries)
+        ├── allowed MCP capabilities              (names only)
+        │
+        ├── pinned workspace memory               ALWAYS, all of it
+        ├── pinned private memory                 ALWAYS, all of it
+        │
+        ├── retrieval.py(query = task title + description + recent activity)
+        │        │
+        │        ├── vector search over active records for this agent + workspace
+        │        ├── score = 0.6·similarity + 0.25·importance + 0.15·recency
+        │        ├── drop status != active
+        │        └── take until the memory token budget is spent
+        │
+        ├── current task and its state
+        └── the last N activity entries
+```
+
+Two hard rules:
+
+- Never inject the whole store. Pinned plus top-k only.
+- Pinned memory has its own budget, separate from retrieved memory, so a large retrieval can never push out a critical rule.
+
+Every returned record gets `last_accessed_at` updated. That feeds the recency term and shows the human which memories are actually used.
+
+## 32.4 Consolidation
+
+A stale memory is worse than a missing one.
+
+```text
+"We use Redis queues."                      → superseded
+"We are migrating away from Redis."         → superseded
+"Job queues use Postgres. Redis is not used for queues."   → active
+```
+
+Retrieval reads `status = 'active'` only. Superseded records stay in the table for provenance and are visible in the UI history, never in a prompt.
+
+A nightly job re-embeds recent records, finds contradiction clusters, and proposes supersessions. It proposes. It does not apply them without a human, because a wrong supersession silently deletes knowledge.
+
+## 32.5 Where memory lives per agent
+
+```text
+Agent Alex
+├── private memory      scope = agent, agent_id = alex        184 records
+├── workspace memory    scope = workspace                     shared, read only for the agent
+└── task memory         scope = task, task_id = TASK-142       dropped when the task is archived
+```
+
+A new hire gets workspace memory on the first run, with no assignment step, because the retrieval query already includes `scope = 'workspace'`.
+
+Firing an agent sets its private records to `archived`. They stop being retrieved and stay recoverable.
+
+---
+
+# 33. Product Principle
 
 The interface should feel like managing a small team, not managing AI prompts.
 
