@@ -1,4 +1,6 @@
 import asyncio
+import os
+import sys
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -25,6 +27,7 @@ class RuntimeSettings:
     model: str = "claude-sonnet-5"
     permission_mode: str = "acceptEdits"
     runtime_root: Path = field(default_factory=lambda: Path(".agent-office/runtime"))
+    database_url: str | None = field(default_factory=lambda: os.environ.get("DATABASE_URL"))
 
 
 class RuntimeService:
@@ -61,10 +64,23 @@ class RuntimeService:
         return await self._start_run(agent, task_worktree, allowed_servers, agent_session, message, env)
 
     async def _start_run(self, agent, task_worktree, allowed_servers, resume_session, initial_message, env) -> ExecutionRun:
-        mcp_config_path = write_mcp_config(self._agent_runtime_dir(agent), allowed_servers)
+        internal_servers = self._build_internal_servers(agent, task_worktree)
+        mcp_config_path = write_mcp_config(self._agent_runtime_dir(agent), allowed_servers, internal_servers)
         _agent_session, run = await self._open_session_and_run(agent, task_worktree, resume_session)
         await self._launch_process(run, task_worktree, mcp_config_path, resume_session, initial_message, env)
         return run
+
+    def _build_internal_servers(self, agent: Agent, task_worktree: TaskWorktree) -> dict[str, dict]:
+        """Wires the ask_human tool (README 19.7) in for every run: unlike a catalog server, it isn't opt-in."""
+        if not self.settings.database_url:
+            return {}
+        ask_human_script = Path(__file__).with_name("ask_human_mcp.py")
+        env = {
+            "DATABASE_URL": self.settings.database_url,
+            "AGENT_ID": str(agent.id),
+            "TASK_ID": str(task_worktree.task_id),
+        }
+        return {"ask_human": {"command": sys.executable, "args": [str(ask_human_script)], "env": env}}
 
     async def _open_session_and_run(
         self, agent, task_worktree, resume_session: AgentSession | None
