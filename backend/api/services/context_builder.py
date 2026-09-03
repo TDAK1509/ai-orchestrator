@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from models.agent import Agent
+from models.checkpoint import AgentCheckpoint
 from models.task import Task
 from runtime.mcp_config import McpServerRef
 from services.config_repo_service import ensure_config_worktree
@@ -8,17 +9,29 @@ from services.memory_service import retrieve_context_memories
 from services.skill_service import list_agent_skills, read_instructions, skill_dir
 
 
-async def build_initial_message(db, agent: Agent, task: Task, repo_root: Path, allowed_servers: list[McpServerRef]) -> dict:
-    """Combines identity + skills + MCP + memory + task (README 17.4/32.3): the CLI has no channel for this but the first user turn."""
+async def build_initial_message(db, agent: Agent, task: Task, repo_root: Path, allowed_servers: list[McpServerRef], checkpoint: AgentCheckpoint | None = None) -> dict:
+    """Combines identity + skills + MCP + memory + task (README 17.4/32.3): the CLI has no channel for this but the first user turn. A checkpoint, when given, rebuilds a rotated session's context (17.5) instead of starting from nothing."""
     sections = [
         render_identity(agent),
         await render_skills(db, agent, repo_root),
         render_mcp_capabilities(allowed_servers),
         await render_memory(db, agent, task),
+        render_checkpoint(checkpoint),
         render_task(task),
     ]
     content = "\n\n".join(section for section in sections if section)
     return {"type": "user", "message": {"role": "user", "content": content}}
+
+
+def render_checkpoint(checkpoint: AgentCheckpoint | None) -> str:
+    if checkpoint is None:
+        return ""
+    parts = [f"## Continuing from a checkpoint\n{checkpoint.summary}"]
+    if checkpoint.unfinished_work:
+        parts.append("Unfinished work:\n" + "\n".join(f"- {item}" for item in checkpoint.unfinished_work))
+    if checkpoint.blockers:
+        parts.append("Blockers:\n" + "\n".join(f"- {item}" for item in checkpoint.blockers))
+    return "\n\n".join(parts)
 
 
 def render_identity(agent: Agent) -> str:

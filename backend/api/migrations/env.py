@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from models import (  # noqa: F401
     agent,
     attention,
+    checkpoint,
     decision,
     mcp,
     memory,

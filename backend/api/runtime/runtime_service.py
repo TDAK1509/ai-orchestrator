@@ -61,20 +61,31 @@ class RuntimeService:
             return await self._start_run(db, agent, task_worktree, allowed_servers, agent_session, message, env)
 
     async def _start_run(self, db, agent, task_worktree, allowed_servers, resume_session, initial_message, env) -> ExecutionRun:
-        internal_servers = self._build_internal_servers(agent, task_worktree)
+        agent_session, run = await self._open_session_and_run(db, agent, task_worktree, resume_session)
+        internal_servers = self._build_internal_servers(agent, task_worktree, agent_session)
         mcp_config_path = write_mcp_config(self._agent_runtime_dir(agent.id), allowed_servers, internal_servers)
-        _agent_session, run = await self._open_session_and_run(db, agent, task_worktree, resume_session)
         await self._launch_process(db, run, task_worktree, mcp_config_path, resume_session, initial_message, env)
         return run
 
-    def _build_internal_servers(self, agent: Agent, task_worktree: TaskWorktree) -> dict[str, dict]:
-        """Wires the ask_human tool (README 19.7) in for every run: unlike a catalog server, it isn't opt-in."""
+    def _build_internal_servers(self, agent: Agent, task_worktree: TaskWorktree, agent_session: AgentSession) -> dict[str, dict]:
+        """Wires ask_human (19.7) and checkpoint (17.5) in for every run: unlike a catalog server, neither is opt-in."""
         database_url = self.settings.ask_human_database_url or self.settings.database_url
         if not database_url:
             return {}
-        ask_human_script = Path(__file__).with_name("ask_human_mcp.py")
-        env = {"DATABASE_URL": database_url, "AGENT_ID": str(agent.id), "TASK_ID": str(task_worktree.task_id)}
-        return {"ask_human": {"command": sys.executable, "args": [str(ask_human_script)], "env": env}}
+        env = {
+            "DATABASE_URL": database_url,
+            "AGENT_ID": str(agent.id),
+            "TASK_ID": str(task_worktree.task_id),
+            "AGENT_SESSION_ID": str(agent_session.id),
+        }
+        return self._internal_server_entries(env)
+
+    def _internal_server_entries(self, env: dict[str, str]) -> dict[str, dict]:
+        scripts = {"ask_human": "ask_human_mcp.py", "checkpoint": "checkpoint_mcp.py"}
+        return {
+            name: {"command": sys.executable, "args": [str(Path(__file__).with_name(script))], "env": env}
+            for name, script in scripts.items()
+        }
 
     async def _open_session_and_run(
         self, db, agent, task_worktree, resume_session: AgentSession | None
@@ -166,6 +177,8 @@ class RuntimeService:
         return agent_session, run
 
     async def _apply_event(self, db, agent_session: AgentSession, event: DomainEvent) -> None:
+        # allow-comment: a character count, not a real token count (no tokenizer here) -- just enough of a proxy for README 17.5's "track approximate context usage" to let an operator decide when a session is worth rotating.
+        agent_session.approx_chars += len(str(event.raw))
         if event.kind == "session_started" and event.claude_session_id:
             agent_session.claude_session_id = event.claude_session_id
             await db_commit(db)

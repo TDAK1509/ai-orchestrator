@@ -20,6 +20,8 @@ class AgentSession(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     claude_session_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     cwd: Mapped[str] = mapped_column(String(500), nullable=False)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # allow-comment: a character count is a proxy for context usage, not real token counting, which needs a tokenizer this repo doesn't have (README 17.5 "track approximate context usage").
+    approx_chars: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
 class BoundVia(str, enum.Enum):
