@@ -14,8 +14,10 @@ from models import (  # noqa: F401
     agent,
     attention,
     decision,
+    mcp,
     merge,
     session,
+    skill,
     task,
     worktree,
 )
