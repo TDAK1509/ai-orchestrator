@@ -6,6 +6,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from db import commit
 from models.agent import Agent
 from models.base import utcnow
 from models.skill import AgentSkillAssignment, Skill
@@ -22,7 +23,7 @@ async def create_skill(db, config_worktree: Path, name: str, description: str | 
     await db.flush()
     write_skill_files(skill_dir(config_worktree, slug), skill, instructions)
     await commit_skill_change(config_worktree, f'agent-office: add skill "{name}"')
-    await db.commit()
+    await commit(db)
     return skill
 
 
@@ -33,7 +34,7 @@ async def edit_skill(db, config_worktree: Path, skill: Skill, name: str | None =
     path = skill_dir(config_worktree, skill.slug)
     write_skill_files(path, skill, resolve_instructions(path, instructions))
     await commit_skill_change(config_worktree, f'agent-office: update skill "{skill.name}"')
-    await db.commit()
+    await commit(db)
     return skill
 
 
@@ -55,7 +56,7 @@ async def delete_skill(db, config_worktree: Path, skill: Skill) -> None:
     await db.flush()
     remove_skill_files(skill_dir(config_worktree, skill.slug))
     await commit_skill_change(config_worktree, f'agent-office: remove skill "{skill.name}"')
-    await db.commit()
+    await commit(db)
 
 
 async def delete_skill_assignments(db, skill_id: uuid.UUID) -> None:
@@ -67,7 +68,7 @@ async def delete_skill_assignments(db, skill_id: uuid.UUID) -> None:
 async def assign_skill(db, agent: Agent, skill: Skill) -> AgentSkillAssignment:
     assignment = AgentSkillAssignment(id=uuid.uuid4(), agent_id=agent.id, skill_id=skill.id)
     db.add(assignment)
-    await db.commit()
+    await commit(db)
     return assignment
 
 
@@ -76,7 +77,7 @@ async def unassign_skill(db, agent: Agent, skill: Skill) -> None:
     assignment = (await db.execute(query)).scalars().first()
     if assignment is not None:
         await db.delete(assignment)
-        await db.commit()
+        await commit(db)
 
 
 async def list_agent_skills(db, agent_id: uuid.UUID) -> list[Skill]:

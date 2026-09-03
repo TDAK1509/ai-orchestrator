@@ -3,6 +3,13 @@ from .attention import AttentionEvent, AttentionType
 from .base import Base
 from .decision import DecisionRequest, DecisionStatus
 from .mcp import AgentMcpPermission
+from .memory import (
+    MemoryRecord,
+    MemoryScope,
+    MemorySourceType,
+    MemoryStatus,
+    MemoryType,
+)
 from .merge import MergeType, PrStatus, TaskMerge
 from .session import AgentSession, BoundVia, ExecutionRun, RunStatus
 from .skill import AgentSkillAssignment, Skill
@@ -22,6 +29,11 @@ __all__ = [
     "DecisionRequest",
     "DecisionStatus",
     "ExecutionRun",
+    "MemoryRecord",
+    "MemoryScope",
+    "MemorySourceType",
+    "MemoryStatus",
+    "MemoryType",
     "MergeType",
     "PrStatus",
     "RunStatus",

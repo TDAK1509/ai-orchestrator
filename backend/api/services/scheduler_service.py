@@ -3,6 +3,7 @@ import asyncio
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from db import commit
 from models.agent import Agent, AgentStatus
 from models.base import utcnow
 
@@ -18,7 +19,7 @@ async def claim_slot_or_queue(db: AsyncSession, agent: Agent, max_concurrent_age
         else:
             agent.status = AgentStatus.QUEUED
             agent.queued_at = utcnow()
-        await db.commit()
+        await commit(db)
         return agent.status == AgentStatus.WORKING
 
 
@@ -31,7 +32,7 @@ async def claim_next_queued_agent(db: AsyncSession, max_concurrent_agents: int) 
             return None
         next_agent.status = AgentStatus.WORKING
         next_agent.queued_at = None
-        await db.commit()
+        await commit(db)
         return next_agent
 
 

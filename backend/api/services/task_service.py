@@ -3,6 +3,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from db import commit
 from models.agent import Agent, AgentStatus
 from models.attention import AttentionEvent, AttentionType
 from models.base import utcnow
@@ -13,8 +14,8 @@ from models.worktree import TaskWorktree
 from runtime import landing
 from runtime import worktree as worktree_ops
 from runtime.mcp_config import McpServerRef
-from runtime.prompt import build_initial_user_message
 from runtime.runtime_service import RuntimeService
+from services.context_builder import build_initial_message
 from services.mcp_service import (
     default_pool_paths,
     read_mcp_pool,
@@ -40,7 +41,7 @@ async def create_task(
 ) -> Task:
     task = Task(id=uuid.uuid4(), title=title, description=description, priority=priority)
     db.add(task)
-    await db.commit()
+    await commit(db)
     return task
 
 
@@ -58,7 +59,8 @@ async def start_agent_on_task(db, runtime_service: RuntimeService, repo_root: Pa
     """Assumes the caller already claimed agent's WORKING slot; only spawns and hands the run to a background driver."""
     task_worktree = await ensure_task_worktree(db, repo_root, task, policy.base_branch)
     allowed_servers = await resolve_agent_mcp_servers(db, repo_root, agent)
-    run = await runtime_service.spawn(agent, task_worktree, allowed_servers, build_initial_user_message(task))
+    message = await build_initial_message(db, agent, task, repo_root, allowed_servers)
+    run = await runtime_service.spawn(agent, task_worktree, allowed_servers, message)
     schedule_run_completion(db, runtime_service, repo_root, agent, task, task_worktree, run, policy)
 
 
@@ -107,7 +109,7 @@ async def land_task(db, task: Task, task_worktree: TaskWorktree, repo_root: Path
     db.add(merge)
     task.status = TaskStatus.DONE
     task.completed_at = utcnow()
-    await db.commit()
+    await commit(db)
     return merge
 
 
@@ -149,14 +151,14 @@ async def block_task(db, agent: Agent, task: Task, title: str, message: str) -> 
     agent.needs_attention = True
     event = AttentionEvent(id=uuid.uuid4(), type=AttentionType.TASK_FAILED, agent_id=agent.id, task_id=task.id, title=title, message=message)
     db.add(event)
-    await db.commit()
+    await commit(db)
     return event
 
 
 async def release_agent(db, agent: Agent) -> None:
     agent.status = AgentStatus.IDLE
     agent.current_task_id = None
-    await db.commit()
+    await commit(db)
 
 
 async def promote_next_queued_agent(db, runtime_service: RuntimeService, repo_root: Path, policy: TaskRuntimePolicy) -> Agent | None:

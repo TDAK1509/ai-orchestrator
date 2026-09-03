@@ -15,6 +15,7 @@ from models import (  # noqa: F401
     attention,
     decision,
     mcp,
+    memory,
     merge,
     session,
     skill,

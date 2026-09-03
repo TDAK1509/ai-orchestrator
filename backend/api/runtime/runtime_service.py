@@ -1,4 +1,3 @@
-import asyncio
 import os
 import sys
 import uuid
@@ -10,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import DEFAULT_DATABASE_URL
+from db import commit as db_commit
 from models.agent import Agent
 from models.attention import AttentionEvent, AttentionType
 from models.base import utcnow
@@ -41,7 +41,6 @@ class RuntimeService:
         self.settings = settings
         self._processes: dict[uuid.UUID, process.ManagedProcess] = {}
         self._kill_requested: set[uuid.UUID] = set()
-        self._db_lock = asyncio.Lock()
 
     async def spawn(
         self,
@@ -233,9 +232,8 @@ class RuntimeService:
         )
 
     async def commit(self) -> None:
-        """Every db write goes through here, even from outside this class: one AsyncSession is shared across concurrent tasks, and it cannot survive two commits interleaving."""
-        async with self._db_lock:
-            await self.db.commit()
+        """Delegates to db.commit(): every writer of this shared session, in every service, must go through that same lock, not a private one scoped to this class."""
+        await db_commit(self.db)
 
 
 def require_resumable_session(agent: Agent, task_worktree: TaskWorktree, agent_session: AgentSession) -> None:

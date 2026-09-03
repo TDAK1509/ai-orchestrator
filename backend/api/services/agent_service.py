@@ -3,6 +3,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from db import commit
 from models.agent import Agent, AgentStatus
 from models.session import AgentSession, ExecutionRun, RunStatus
 from models.task import Task, TaskStatus
@@ -12,7 +13,7 @@ from runtime.runtime_service import RuntimeService
 async def hire_agent(db: AsyncSession, name: str, role: str, instructions: str = "") -> Agent:
     agent = Agent(id=uuid.uuid4(), name=name, role=role, instructions=instructions)
     db.add(agent)
-    await db.commit()
+    await commit(db)
     return agent
 
 
@@ -20,7 +21,7 @@ async def edit_agent(
     db: AsyncSession, agent: Agent, name: str | None = None, role: str | None = None, instructions: str | None = None
 ) -> Agent:
     apply_agent_edits(agent, name, role, instructions)
-    await db.commit()
+    await commit(db)
     return agent
 
 
@@ -71,5 +72,5 @@ async def release_unfinished_task(db: AsyncSession, agent: Agent) -> None:
 
 async def restore_agent(db: AsyncSession, agent: Agent) -> Agent:
     agent.active = True
-    await db.commit()
+    await commit(db)
     return agent
