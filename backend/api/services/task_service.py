@@ -12,8 +12,14 @@ from models.task import Task, TaskPriority, TaskStatus
 from models.worktree import TaskWorktree
 from runtime import landing
 from runtime import worktree as worktree_ops
+from runtime.mcp_config import McpServerRef
 from runtime.prompt import build_initial_user_message
 from runtime.runtime_service import RuntimeService
+from services.mcp_service import (
+    default_pool_paths,
+    read_mcp_pool,
+    resolve_allowed_servers,
+)
 from services.scheduler_service import claim_next_queued_agent, claim_slot_or_queue
 from services.worktree_service import ensure_task_worktree
 
@@ -51,8 +57,14 @@ async def assign_task(db, runtime_service: RuntimeService, repo_root: Path, task
 async def start_agent_on_task(db, runtime_service: RuntimeService, repo_root: Path, agent: Agent, task: Task, policy: TaskRuntimePolicy) -> None:
     """Assumes the caller already claimed agent's WORKING slot; only spawns and hands the run to a background driver."""
     task_worktree = await ensure_task_worktree(db, repo_root, task, policy.base_branch)
-    run = await runtime_service.spawn(agent, task_worktree, [], build_initial_user_message(task))
+    allowed_servers = await resolve_agent_mcp_servers(db, repo_root, agent)
+    run = await runtime_service.spawn(agent, task_worktree, allowed_servers, build_initial_user_message(task))
     schedule_run_completion(db, runtime_service, repo_root, agent, task, task_worktree, run, policy)
+
+
+async def resolve_agent_mcp_servers(db, repo_root: Path, agent: Agent) -> list[McpServerRef]:
+    pool = read_mcp_pool(default_pool_paths(repo_root))
+    return await resolve_allowed_servers(db, agent.id, pool)
 
 
 def schedule_run_completion(db, runtime_service, repo_root, agent, task, task_worktree, run, policy) -> None:

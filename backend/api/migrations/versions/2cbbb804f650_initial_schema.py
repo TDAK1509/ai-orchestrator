@@ -1,8 +1,8 @@
 """initial schema
 
-Revision ID: 0cd3699964ba
+Revision ID: 2cbbb804f650
 Revises: 
-Create Date: 2026-09-03 11:29:02.690797
+Create Date: 2026-09-03 11:34:19.622321
 
 """
 from collections.abc import Sequence
@@ -12,7 +12,7 @@ from alembic import op
 
 import models.base
 
-revision: str = '0cd3699964ba'
+revision: str = '2cbbb804f650'
 down_revision: str | None = None
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
@@ -33,6 +33,37 @@ def upgrade() -> None:
     sa.Column('id', models.base.GUID(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.PrimaryKeyConstraint('id')
+    )
+    op.create_table('skills',
+    sa.Column('slug', sa.String(length=120), nullable=False),
+    sa.Column('name', sa.String(length=120), nullable=False),
+    sa.Column('description', sa.String(), nullable=True),
+    sa.Column('repository_path', sa.String(length=500), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('id', models.base.GUID(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('slug')
+    )
+    op.create_table('agent_mcp_permissions',
+    sa.Column('agent_id', models.base.GUID(), nullable=False),
+    sa.Column('mcp_server_name', sa.String(length=120), nullable=False),
+    sa.Column('allowed', sa.Boolean(), nullable=False),
+    sa.Column('id', models.base.GUID(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.ForeignKeyConstraint(['agent_id'], ['agents.id'], ),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('agent_id', 'mcp_server_name')
+    )
+    op.create_table('agent_skill_assignments',
+    sa.Column('agent_id', models.base.GUID(), nullable=False),
+    sa.Column('skill_id', models.base.GUID(), nullable=False),
+    sa.Column('id', models.base.GUID(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.ForeignKeyConstraint(['agent_id'], ['agents.id'], ),
+    sa.ForeignKeyConstraint(['skill_id'], ['skills.id'], ),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('agent_id', 'skill_id')
     )
     op.create_table('tasks',
     sa.Column('title', sa.String(length=200), nullable=False),
@@ -145,5 +176,8 @@ def downgrade() -> None:
     op.drop_table('task_merges')
     op.drop_table('decision_requests')
     op.drop_table('tasks')
+    op.drop_table('agent_skill_assignments')
+    op.drop_table('agent_mcp_permissions')
+    op.drop_table('skills')
     op.drop_table('agents')
     # ### end Alembic commands ###

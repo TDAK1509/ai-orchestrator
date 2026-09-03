@@ -51,6 +51,17 @@ async def push_worktree(path: Path, branch: str, remote: str = "origin") -> None
 
 async def commit_worktree(path: Path, message: str) -> str | None:
     await run_git(["add", "-A"], cwd=path)
+    return await commit_if_staged(path, message)
+
+
+async def commit_paths(path: Path, relative_paths: list[str], message: str) -> str | None:
+    """Never `add -A`: the caller is committing on our own behalf (README 19.3), not staging agent-written files it hasn't chosen."""
+    for relative_path in relative_paths:
+        await run_git(["add", relative_path], cwd=path)
+    return await commit_if_staged(path, message)
+
+
+async def commit_if_staged(path: Path, message: str) -> str | None:
     if not await has_staged_changes(path):
         return None
     await run_git(["commit", "--no-verify", "-m", message], cwd=path)
