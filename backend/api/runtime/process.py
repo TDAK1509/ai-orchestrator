@@ -57,13 +57,6 @@ class ManagedProcess:
             await self._process.wait()
 
 
-def signal_process_group(pid: int, sig: signal.Signals) -> None:
-    try:
-        os.killpg(os.getpgid(pid), sig)
-    except ProcessLookupError:
-        pass
-
-
 async def spawn(command: list[str], cwd: Path, env: dict[str, str] | None = None) -> ManagedProcess:
     process = await asyncio.create_subprocess_exec(
         *command,
@@ -84,6 +77,26 @@ def build_subprocess_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
+async def terminate_pid(pid: int, grace_period_seconds: float = 5.0) -> None:
+    """For stopping a run this process didn't spawn (e.g. session rotation invoked from a separate CLI run): no ManagedProcess to await, so poll instead of wait()."""
+    if not is_pid_alive(pid):
+        return
+    signal_process_group(pid, signal.SIGTERM)
+    if await wait_for_pid_exit(pid, grace_period_seconds):
+        return
+    signal_process_group(pid, signal.SIGKILL)
+    await wait_for_pid_exit(pid, grace_period_seconds)
+
+
+async def wait_for_pid_exit(pid: int, timeout_seconds: float, poll_interval_seconds: float = 0.2) -> bool:
+    deadline = asyncio.get_event_loop().time() + timeout_seconds
+    while asyncio.get_event_loop().time() < deadline:
+        if not is_pid_alive(pid):
+            return True
+        await asyncio.sleep(poll_interval_seconds)
+    return not is_pid_alive(pid)
+
+
 def is_pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -92,3 +105,10 @@ def is_pid_alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def signal_process_group(pid: int, sig: signal.Signals) -> None:
+    try:
+        os.killpg(os.getpgid(pid), sig)
+    except ProcessLookupError:
+        pass

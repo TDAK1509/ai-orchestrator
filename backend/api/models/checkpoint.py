@@ -1,6 +1,7 @@
 import uuid
+from datetime import datetime
 
-from sqlalchemy import JSON, ForeignKey, String
+from sqlalchemy import JSON, DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import GUID, Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -26,3 +27,6 @@ class AgentCheckpoint(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     branch: Mapped[str | None] = mapped_column(String(200), nullable=True)
     head_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
     test_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    # allow-comment: set once rotation actually consumes this checkpoint, so a retry of the same rotation can't re-extract its memories or spawn a second replacement session.
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

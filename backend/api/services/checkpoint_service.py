@@ -1,6 +1,7 @@
 import uuid
 
 from db import commit
+from models.base import utcnow
 from models.checkpoint import AgentCheckpoint
 from models.memory import MemoryScope, MemorySourceType, MemoryType
 from services.memory_service import build_memory
@@ -19,10 +20,13 @@ async def create_checkpoint(db, agent_id: uuid.UUID, agent_session_id: uuid.UUID
 
 
 async def extract_memories_from_checkpoint(db, checkpoint: AgentCheckpoint) -> list:
-    """No model pass (README 32.2): the checkpoint's own fields become memories directly, since the agent already produced them as structured data."""
+    """No model pass (README 32.2): the checkpoint's own fields become memories directly. Marks the checkpoint used in the same commit, so calling this twice for the same checkpoint is rejected rather than duplicating memories."""
+    if checkpoint.used_at is not None:
+        raise ValueError(f"checkpoint {checkpoint.id} was already consumed at {checkpoint.used_at}")
     records = [build_summary_memory(checkpoint), *build_field_memories(checkpoint)]
     for record in records:
         db.add(record)
+    checkpoint.used_at = utcnow()
     await commit(db)
     return records
 
@@ -35,6 +39,7 @@ def build_field_memories(checkpoint: AgentCheckpoint) -> list:
     typed_fields = [
         (checkpoint.decisions, MemoryType.DECISION),
         (checkpoint.discoveries, MemoryType.FACT),
+        (checkpoint.blockers, MemoryType.LESSON),
         (checkpoint.risks, MemoryType.LESSON),
         (checkpoint.important_files, MemoryType.FACT),
     ]
@@ -44,5 +49,5 @@ def build_field_memories(checkpoint: AgentCheckpoint) -> list:
 def build_checkpoint_memory(checkpoint: AgentCheckpoint, content: str, type_: MemoryType):
     return build_memory(
         MemoryScope.AGENT, content, type_, checkpoint.agent_id, checkpoint.task_id,
-        importance=0.5, pinned=False, source_type=MemorySourceType.SYSTEM, source_id=str(checkpoint.id),
+        importance=0.5, pinned=False, source_type=MemorySourceType.AGENT, source_id=str(checkpoint.id),
     )

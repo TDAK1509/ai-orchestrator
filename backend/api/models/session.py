@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import GUID, Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -20,8 +20,8 @@ class AgentSession(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     claude_session_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     cwd: Mapped[str] = mapped_column(String(500), nullable=False)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # allow-comment: a character count is a proxy for context usage, not real token counting, which needs a tokenizer this repo doesn't have (README 17.5 "track approximate context usage").
-    approx_chars: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # allow-comment: a character count is a proxy for context usage, not real token counting, which needs a tokenizer this repo doesn't have (README 17.5 "track approximate context usage"). server_default, not just default=0: a NOT NULL column added to a table that may already have rows needs a value the database itself can supply during the ALTER, not just one the ORM supplies for new inserts.
+    approx_chars: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"), nullable=False)
 
 
 class BoundVia(str, enum.Enum):

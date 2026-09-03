@@ -1,8 +1,8 @@
 """agent checkpoints and session context usage
 
-Revision ID: 700cfb30f074
+Revision ID: 2c2aaa995b86
 Revises: 3e6c51a8538f
-Create Date: 2026-09-03 12:15:43.323600
+Create Date: 2026-09-03 12:27:33.990935
 
 """
 from collections.abc import Sequence
@@ -12,7 +12,7 @@ from alembic import op
 
 import models.base
 
-revision: str = '700cfb30f074'
+revision: str = '2c2aaa995b86'
 down_revision: str | None = '3e6c51a8538f'
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
@@ -34,6 +34,7 @@ def upgrade() -> None:
     sa.Column('branch', sa.String(length=200), nullable=True),
     sa.Column('head_sha', sa.String(length=64), nullable=True),
     sa.Column('test_status', sa.String(length=50), nullable=True),
+    sa.Column('used_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('id', models.base.GUID(), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.ForeignKeyConstraint(['agent_id'], ['agents.id'], ),
@@ -41,7 +42,7 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['task_id'], ['tasks.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
-    op.add_column('agent_sessions', sa.Column('approx_chars', sa.Integer(), nullable=False))
+    op.add_column('agent_sessions', sa.Column('approx_chars', sa.Integer(), server_default=sa.text('0'), nullable=False))
     # ### end Alembic commands ###
 
 
