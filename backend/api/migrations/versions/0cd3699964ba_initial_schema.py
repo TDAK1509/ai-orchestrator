@@ -1,8 +1,8 @@
 """initial schema
 
-Revision ID: 5a70e1a5cd67
+Revision ID: 0cd3699964ba
 Revises: 
-Create Date: 2026-09-03 11:10:08.464701
+Create Date: 2026-09-03 11:29:02.690797
 
 """
 from collections.abc import Sequence
@@ -12,7 +12,7 @@ from alembic import op
 
 import models.base
 
-revision: str = '5a70e1a5cd67'
+revision: str = '0cd3699964ba'
 down_revision: str | None = None
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
@@ -53,7 +53,7 @@ def upgrade() -> None:
     sa.Column('question', sa.String(), nullable=False),
     sa.Column('options', sa.JSON(), nullable=True),
     sa.Column('allow_custom_answer', sa.Boolean(), nullable=False),
-    sa.Column('status', sa.Enum('PENDING', 'ANSWERED', name='decisionstatus', native_enum=False, length=10), nullable=False),
+    sa.Column('status', sa.Enum('PENDING', 'ANSWERED', 'CANCELLED', name='decisionstatus', native_enum=False, length=10), nullable=False),
     sa.Column('answer', sa.String(), nullable=True),
     sa.Column('answered_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('id', models.base.GUID(), nullable=False),

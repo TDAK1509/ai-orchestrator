@@ -11,6 +11,7 @@ from .base import GUID, Base, TimestampMixin, UUIDPrimaryKeyMixin
 class DecisionStatus(str, enum.Enum):
     PENDING = "pending"
     ANSWERED = "answered"
+    CANCELLED = "cancelled"
 
 
 class DecisionRequest(UUIDPrimaryKeyMixin, TimestampMixin, Base):

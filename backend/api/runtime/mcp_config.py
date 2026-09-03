@@ -11,11 +11,12 @@ class McpServerRef:
     connection: dict
 
 
-def write_mcp_config(runtime_dir: Path, allowed_servers: list[McpServerRef]) -> Path:
-    """Write the allow-list only. Never a credential: those live in the terminal config."""
+def write_mcp_config(runtime_dir: Path, allowed_servers: list[McpServerRef], internal_servers: dict[str, dict] | None = None) -> Path:
+    """Write the allow-list plus our own internal servers such as ask_human, never a third-party credential: those live in the terminal config."""
     runtime_dir.mkdir(parents=True, exist_ok=True)
     config_path = runtime_dir / "mcp.json"
     servers = {server.name: server.connection for server in allowed_servers}
+    servers.update(internal_servers or {})
     config_path.write_text(json.dumps({"mcpServers": servers}, indent=2))
     os.chmod(config_path, 0o600)
     return config_path
