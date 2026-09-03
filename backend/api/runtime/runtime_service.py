@@ -61,20 +61,31 @@ class RuntimeService:
             return await self._start_run(db, agent, task_worktree, allowed_servers, agent_session, message, env)
 
     async def _start_run(self, db, agent, task_worktree, allowed_servers, resume_session, initial_message, env) -> ExecutionRun:
-        internal_servers = self._build_internal_servers(agent, task_worktree)
+        agent_session, run = await self._open_session_and_run(db, agent, task_worktree, resume_session)
+        internal_servers = self._build_internal_servers(agent, task_worktree, agent_session)
         mcp_config_path = write_mcp_config(self._agent_runtime_dir(agent.id), allowed_servers, internal_servers)
-        _agent_session, run = await self._open_session_and_run(db, agent, task_worktree, resume_session)
-        await self._launch_process(db, run, task_worktree, mcp_config_path, resume_session, initial_message, env)
+        await self._launch_process(db, agent_session, run, task_worktree, mcp_config_path, resume_session, initial_message, env)
         return run
 
-    def _build_internal_servers(self, agent: Agent, task_worktree: TaskWorktree) -> dict[str, dict]:
-        """Wires the ask_human tool (README 19.7) in for every run: unlike a catalog server, it isn't opt-in."""
+    def _build_internal_servers(self, agent: Agent, task_worktree: TaskWorktree, agent_session: AgentSession) -> dict[str, dict]:
+        """Wires ask_human (19.7) and checkpoint (17.5) in for every run: unlike a catalog server, neither is opt-in."""
         database_url = self.settings.ask_human_database_url or self.settings.database_url
         if not database_url:
             return {}
-        ask_human_script = Path(__file__).with_name("ask_human_mcp.py")
-        env = {"DATABASE_URL": database_url, "AGENT_ID": str(agent.id), "TASK_ID": str(task_worktree.task_id)}
-        return {"ask_human": {"command": sys.executable, "args": [str(ask_human_script)], "env": env}}
+        env = {
+            "DATABASE_URL": database_url,
+            "AGENT_ID": str(agent.id),
+            "TASK_ID": str(task_worktree.task_id),
+            "AGENT_SESSION_ID": str(agent_session.id),
+        }
+        return self._internal_server_entries(env)
+
+    def _internal_server_entries(self, env: dict[str, str]) -> dict[str, dict]:
+        scripts = {"ask_human": "ask_human_mcp.py", "checkpoint": "checkpoint_mcp.py"}
+        return {
+            name: {"command": sys.executable, "args": [str(Path(__file__).with_name(script))], "env": env}
+            for name, script in scripts.items()
+        }
 
     async def _open_session_and_run(
         self, db, agent, task_worktree, resume_session: AgentSession | None
@@ -85,9 +96,10 @@ class RuntimeService:
         run = self._open_execution_run(db, agent_session, bound_via, before_commit)
         return agent_session, run
 
-    async def _launch_process(self, db, run, task_worktree, mcp_config_path, resume_session, initial_message, env) -> None:
+    async def _launch_process(self, db, agent_session, run, task_worktree, mcp_config_path, resume_session, initial_message, env) -> None:
         managed = await self._spawn_process(task_worktree, mcp_config_path, resume_session, env)
         run.pid = managed.pid
+        agent_session.approx_chars += len(str(initial_message))
         await db_commit(db)
         self._processes[run.id] = managed
         await managed.send_line(initial_message)
@@ -97,8 +109,9 @@ class RuntimeService:
         return self.settings.runtime_root / str(agent_id)
 
     def _open_agent_session(self, db, agent, task_worktree) -> AgentSession:
+        # allow-comment: approx_chars set explicitly, not left to the model's default=0: that's a Python-side ORM default and doesn't populate until this object is flushed, and _launch_process reads it before any flush happens.
         session = AgentSession(
-            id=uuid.uuid4(), agent_id=agent.id, task_worktree_id=task_worktree.id, cwd=task_worktree.path
+            id=uuid.uuid4(), agent_id=agent.id, task_worktree_id=task_worktree.id, cwd=task_worktree.path, approx_chars=0
         )
         db.add(session)
         return session
@@ -154,8 +167,7 @@ class RuntimeService:
             agent_session, run = await self._load_session_and_run(db, run_id)
             try:
                 async for line in managed.iter_stdout_lines():
-                    event = parse_stream_line(line)
-                    await self._apply_event(db, agent_session, event)
+                    event = await self._apply_line(db, agent_session, line)
                     yield event
             finally:
                 await self._finalize_run(db, managed, agent_session, run)
@@ -164,6 +176,12 @@ class RuntimeService:
         run = await db.get(ExecutionRun, run_id)
         agent_session = await db.get(AgentSession, run.agent_session_id)
         return agent_session, run
+
+    async def _apply_line(self, db, agent_session: AgentSession, line: str) -> DomainEvent:
+        track_context_usage(agent_session, line)
+        event = parse_stream_line(line)
+        await self._apply_event(db, agent_session, event)
+        return event
 
     async def _apply_event(self, db, agent_session: AgentSession, event: DomainEvent) -> None:
         if event.kind == "session_started" and event.claude_session_id:
@@ -231,3 +249,8 @@ def require_resumable_session(agent: Agent, task_worktree: TaskWorktree, agent_s
         raise ValueError("agent_session does not belong to this agent and task worktree")
     if not agent_session.claude_session_id:
         raise ValueError("cannot resume a session with no persisted claude_session_id")
+
+
+def track_context_usage(agent_session: AgentSession, line: str) -> None:
+    """Raw wire size, not a real token count (no tokenizer here): just enough of a proxy for README 17.5's "track approximate context usage" for a human or future job to act on."""
+    agent_session.approx_chars += len(line)
