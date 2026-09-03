@@ -8,6 +8,7 @@ from models.agent import Agent, AgentStatus
 from models.session import AgentSession, ExecutionRun, RunStatus
 from models.task import Task, TaskStatus
 from runtime.runtime_service import RuntimeService
+from services.memory_service import archive_memory, list_agent_memories
 
 
 async def hire_agent(db: AsyncSession, name: str, role: str, instructions: str = "") -> Agent:
@@ -34,18 +35,24 @@ def apply_agent_edits(agent: Agent, name: str | None, role: str | None, instruct
         agent.instructions = instructions
 
 
-async def fire_agent(runtime_service: RuntimeService, agent: Agent) -> Agent:
-    """Archives, never deletes: the task's worktree/branch/history outlive the agent that started them."""
-    await stop_active_runtime(runtime_service, agent)
-    await release_unfinished_task(runtime_service.db, agent)
+async def fire_agent(db: AsyncSession, runtime_service: RuntimeService, agent: Agent) -> Agent:
+    """Archives, never deletes: the task's worktree/branch/history, and the agent's own private memory (README 17.2), outlive the firing."""
+    await stop_active_runtime(db, runtime_service, agent)
+    await release_unfinished_task(db, agent)
+    await archive_private_memory(db, agent)
     agent.active = False
     agent.status = AgentStatus.IDLE
-    await runtime_service.commit()
+    await commit(db)
     return agent
 
 
-async def stop_active_runtime(runtime_service: RuntimeService, agent: Agent) -> None:
-    run = await find_running_run_for_agent(runtime_service.db, agent)
+async def archive_private_memory(db: AsyncSession, agent: Agent) -> None:
+    for record in await list_agent_memories(db, agent.id):
+        await archive_memory(db, record)
+
+
+async def stop_active_runtime(db: AsyncSession, runtime_service: RuntimeService, agent: Agent) -> None:
+    run = await find_running_run_for_agent(db, agent)
     if run is not None:
         await runtime_service.kill_run(run.id)
 

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from db import DEFAULT_DATABASE_URL
 from db import commit as db_commit
@@ -36,8 +36,9 @@ class RuntimeSettings:
 class RuntimeService:
     """The only service that touches OS processes and long-lived git state."""
 
-    def __init__(self, db: AsyncSession, settings: RuntimeSettings):
-        self.db = db
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession], settings: RuntimeSettings):
+        # allow-comment: no bound self.db. spawn/resume/stream_events/reconcile_orphans each open their own session, since spawn and stream_events run in genuinely concurrent asyncio tasks (one background worker per run) and a single shared AsyncSession cannot be touched from two tasks at once.
+        self.session_factory = session_factory
         self.settings = settings
         self._processes: dict[uuid.UUID, process.ManagedProcess] = {}
         self._kill_requested: set[uuid.UUID] = set()
@@ -50,26 +51,20 @@ class RuntimeService:
         initial_message: dict,
         env: dict[str, str] | None = None,
     ) -> ExecutionRun:
-        return await self._start_run(agent, task_worktree, allowed_servers, None, initial_message, env)
+        async with self.session_factory() as db:
+            return await self._start_run(db, agent, task_worktree, allowed_servers, None, initial_message, env)
 
-    async def resume(
-        self,
-        agent: Agent,
-        agent_session: AgentSession,
-        task_worktree: TaskWorktree,
-        allowed_servers: list[McpServerRef],
-        prompt_text: str,
-        env: dict[str, str] | None = None,
-    ) -> ExecutionRun:
+    async def resume(self, agent: Agent, agent_session: AgentSession, task_worktree: TaskWorktree, allowed_servers: list[McpServerRef], prompt_text: str, env: dict[str, str] | None = None) -> ExecutionRun:
         require_resumable_session(agent, task_worktree, agent_session)
         message = build_follow_up_message(prompt_text)
-        return await self._start_run(agent, task_worktree, allowed_servers, agent_session, message, env)
+        async with self.session_factory() as db:
+            return await self._start_run(db, agent, task_worktree, allowed_servers, agent_session, message, env)
 
-    async def _start_run(self, agent, task_worktree, allowed_servers, resume_session, initial_message, env) -> ExecutionRun:
+    async def _start_run(self, db, agent, task_worktree, allowed_servers, resume_session, initial_message, env) -> ExecutionRun:
         internal_servers = self._build_internal_servers(agent, task_worktree)
         mcp_config_path = write_mcp_config(self._agent_runtime_dir(agent.id), allowed_servers, internal_servers)
-        _agent_session, run = await self._open_session_and_run(agent, task_worktree, resume_session)
-        await self._launch_process(run, task_worktree, mcp_config_path, resume_session, initial_message, env)
+        _agent_session, run = await self._open_session_and_run(db, agent, task_worktree, resume_session)
+        await self._launch_process(db, run, task_worktree, mcp_config_path, resume_session, initial_message, env)
         return run
 
     def _build_internal_servers(self, agent: Agent, task_worktree: TaskWorktree) -> dict[str, dict]:
@@ -82,18 +77,18 @@ class RuntimeService:
         return {"ask_human": {"command": sys.executable, "args": [str(ask_human_script)], "env": env}}
 
     async def _open_session_and_run(
-        self, agent, task_worktree, resume_session: AgentSession | None
+        self, db, agent, task_worktree, resume_session: AgentSession | None
     ) -> tuple[AgentSession, ExecutionRun]:
         before_commit = await worktree.read_head_commit(Path(task_worktree.path))
-        agent_session = resume_session or self._open_agent_session(agent, task_worktree)
+        agent_session = resume_session or self._open_agent_session(db, agent, task_worktree)
         bound_via = BoundVia.RESUME if resume_session else BoundVia.SPAWN
-        run = self._open_execution_run(agent_session, bound_via, before_commit)
+        run = self._open_execution_run(db, agent_session, bound_via, before_commit)
         return agent_session, run
 
-    async def _launch_process(self, run, task_worktree, mcp_config_path, resume_session, initial_message, env) -> None:
+    async def _launch_process(self, db, run, task_worktree, mcp_config_path, resume_session, initial_message, env) -> None:
         managed = await self._spawn_process(task_worktree, mcp_config_path, resume_session, env)
         run.pid = managed.pid
-        await self.commit()
+        await db_commit(db)
         self._processes[run.id] = managed
         await managed.send_line(initial_message)
         await managed.close_stdin()
@@ -101,16 +96,14 @@ class RuntimeService:
     def _agent_runtime_dir(self, agent_id: uuid.UUID) -> Path:
         return self.settings.runtime_root / str(agent_id)
 
-    def _open_agent_session(self, agent, task_worktree) -> AgentSession:
+    def _open_agent_session(self, db, agent, task_worktree) -> AgentSession:
         session = AgentSession(
             id=uuid.uuid4(), agent_id=agent.id, task_worktree_id=task_worktree.id, cwd=task_worktree.path
         )
-        self.db.add(session)
+        db.add(session)
         return session
 
-    def _open_execution_run(
-        self, agent_session: AgentSession, bound_via: BoundVia, before_commit: str
-    ) -> ExecutionRun:
+    def _open_execution_run(self, db, agent_session: AgentSession, bound_via: BoundVia, before_commit: str) -> ExecutionRun:
         run = ExecutionRun(
             id=uuid.uuid4(),
             agent_session_id=agent_session.id,
@@ -118,7 +111,7 @@ class RuntimeService:
             before_head_commit=before_commit,
             started_at=utcnow(),
         )
-        self.db.add(run)
+        db.add(run)
         return run
 
     async def _spawn_process(
@@ -155,29 +148,29 @@ class RuntimeService:
         ]
 
     async def stream_events(self, run_id: uuid.UUID) -> AsyncIterator[DomainEvent]:
+        """Owns one session for the run's whole life (README 31.1): this is the one worker allowed to write these rows, and it never shares that session with spawn() or another run's stream."""
         managed = self._processes[run_id]
-        agent_session, run = await self._load_session_and_run(run_id)
-        try:
-            async for line in managed.iter_stdout_lines():
-                event = parse_stream_line(line)
-                await self._apply_event(agent_session, event)
-                yield event
-        finally:
-            await self._finalize_run(managed, agent_session, run)
+        async with self.session_factory() as db:
+            agent_session, run = await self._load_session_and_run(db, run_id)
+            try:
+                async for line in managed.iter_stdout_lines():
+                    event = parse_stream_line(line)
+                    await self._apply_event(db, agent_session, event)
+                    yield event
+            finally:
+                await self._finalize_run(db, managed, agent_session, run)
 
-    async def _load_session_and_run(self, run_id: uuid.UUID) -> tuple[AgentSession, ExecutionRun]:
-        run = await self.db.get(ExecutionRun, run_id)
-        agent_session = await self.db.get(AgentSession, run.agent_session_id)
+    async def _load_session_and_run(self, db, run_id: uuid.UUID) -> tuple[AgentSession, ExecutionRun]:
+        run = await db.get(ExecutionRun, run_id)
+        agent_session = await db.get(AgentSession, run.agent_session_id)
         return agent_session, run
 
-    async def _apply_event(self, agent_session: AgentSession, event: DomainEvent) -> None:
+    async def _apply_event(self, db, agent_session: AgentSession, event: DomainEvent) -> None:
         if event.kind == "session_started" and event.claude_session_id:
             agent_session.claude_session_id = event.claude_session_id
-            await self.commit()
+            await db_commit(db)
 
-    async def _finalize_run(
-        self, managed: process.ManagedProcess, agent_session: AgentSession, run: ExecutionRun
-    ) -> None:
+    async def _finalize_run(self, db, managed: process.ManagedProcess, agent_session: AgentSession, run: ExecutionRun) -> None:
         # allow-comment: a caller stopping early (disconnect, cancellation) must still stop the process and record a status, not leak a running Claude session and a stale RUNNING row.
         await managed.terminate()
         exit_code = await managed.wait()
@@ -187,10 +180,10 @@ class RuntimeService:
         run.after_head_commit = await worktree.read_head_commit(Path(agent_session.cwd))
         self._processes.pop(run.id, None)
         remove_mcp_config(self._agent_runtime_dir(agent_session.agent_id))
-        await self.commit()
+        await db_commit(db)
 
     def _resolve_final_status(self, run: ExecutionRun, exit_code: int) -> RunStatus:
-        # allow-comment: kept off kill_run so only this stream loop's task ever writes to self.db, avoiding a second task racing the same AsyncSession.
+        # allow-comment: kept off kill_run so only this stream loop's task ever writes run status, avoiding a second task racing this run's session.
         if run.id in self._kill_requested:
             self._kill_requested.discard(run.id)
             return RunStatus.KILLED
@@ -204,24 +197,25 @@ class RuntimeService:
         await managed.terminate()
 
     async def reconcile_orphans(self) -> list[ExecutionRun]:
-        running = await self._find_running_runs()
-        orphans = [run for run in running if not self._is_run_alive(run)]
-        for run in orphans:
-            await self._mark_run_failed(run)
-        return orphans
+        async with self.session_factory() as db:
+            running = await self._find_running_runs(db)
+            orphans = [run for run in running if not self._is_run_alive(run)]
+            for run in orphans:
+                await self._mark_run_failed(db, run)
+            return orphans
 
-    async def _find_running_runs(self) -> list[ExecutionRun]:
-        result = await self.db.execute(select(ExecutionRun).where(ExecutionRun.status == RunStatus.RUNNING))
+    async def _find_running_runs(self, db) -> list[ExecutionRun]:
+        result = await db.execute(select(ExecutionRun).where(ExecutionRun.status == RunStatus.RUNNING))
         return list(result.scalars())
 
     def _is_run_alive(self, run: ExecutionRun) -> bool:
         return run.pid is not None and process.is_pid_alive(run.pid)
 
-    async def _mark_run_failed(self, run: ExecutionRun) -> None:
+    async def _mark_run_failed(self, db, run: ExecutionRun) -> None:
         run.status = RunStatus.FAILED
         run.completed_at = utcnow()
-        self.db.add(self._build_orphan_attention_event(run))
-        await self.commit()
+        db.add(self._build_orphan_attention_event(run))
+        await db_commit(db)
 
     def _build_orphan_attention_event(self, run: ExecutionRun) -> AttentionEvent:
         return AttentionEvent(
@@ -230,10 +224,6 @@ class RuntimeService:
             title="Execution run orphaned",
             message=f"Run {run.id} had no live process on startup and was marked failed.",
         )
-
-    async def commit(self) -> None:
-        """Delegates to db.commit(): every writer of this shared session, in every service, must go through that same lock, not a private one scoped to this class."""
-        await db_commit(self.db)
 
 
 def require_resumable_session(agent: Agent, task_worktree: TaskWorktree, agent_session: AgentSession) -> None:

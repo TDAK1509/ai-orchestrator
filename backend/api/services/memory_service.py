@@ -38,8 +38,9 @@ async def archive_memory(db: AsyncSession, record: MemoryRecord) -> None:
 
 
 async def supersede_memory(db: AsyncSession, old: MemoryRecord, content: str, type_: MemoryType, source_type: MemorySourceType | None = None, source_id: str | None = None) -> MemoryRecord:
-    """The old record stays for provenance/history but retrieval never sees it again (README 32.4): status flips, nothing is deleted."""
-    new_record = await create_memory(db, old.scope, content, type_, old.agent_id, old.task_id, old.importance, False, source_type, source_id)
+    """One commit for both rows (README 32.4): a crash or concurrent read between two separate commits could see the old and new record both active at once."""
+    new_record = build_memory(old.scope, content, type_, old.agent_id, old.task_id, old.importance, False, source_type, source_id)
+    db.add(new_record)
     old.status = MemoryStatus.SUPERSEDED
     old.superseded_by = new_record.id
     await commit(db)
@@ -47,13 +48,28 @@ async def supersede_memory(db: AsyncSession, old: MemoryRecord, content: str, ty
 
 
 async def create_memory(db: AsyncSession, scope: MemoryScope, content: str, type_: MemoryType, agent_id: uuid.UUID | None = None, task_id: uuid.UUID | None = None, importance: float = 0.5, pinned: bool = False, source_type: MemorySourceType | None = None, source_id: str | None = None) -> MemoryRecord:
-    record = MemoryRecord(
-        id=uuid.uuid4(), scope=scope, agent_id=agent_id, task_id=task_id, type=type_, content=content,
-        importance=importance, pinned=pinned, source_type=source_type, source_id=source_id,
-    )
+    record = build_memory(scope, content, type_, agent_id, task_id, importance, pinned, source_type, source_id)
     db.add(record)
     await commit(db)
     return record
+
+
+def build_memory(scope: MemoryScope, content: str, type_: MemoryType, agent_id: uuid.UUID | None, task_id: uuid.UUID | None, importance: float, pinned: bool, source_type: MemorySourceType | None, source_id: str | None) -> MemoryRecord:
+    require_valid_scope(scope, agent_id, task_id)
+    return MemoryRecord(
+        id=uuid.uuid4(), scope=scope, agent_id=agent_id, task_id=task_id, type=type_, content=content,
+        importance=importance, pinned=pinned, source_type=source_type, source_id=source_id,
+    )
+
+
+def require_valid_scope(scope: MemoryScope, agent_id: uuid.UUID | None, task_id: uuid.UUID | None) -> None:
+    """A workspace record with an agent_id (or an agent record without one) is a confusing, invalid state (README 32.1): scope and owner must agree."""
+    if scope == MemoryScope.WORKSPACE and agent_id is not None:
+        raise ValueError("a workspace-scoped memory must not have an agent_id")
+    if scope == MemoryScope.AGENT and agent_id is None:
+        raise ValueError("an agent-scoped memory requires an agent_id")
+    if scope == MemoryScope.TASK and task_id is None:
+        raise ValueError("a task-scoped memory requires a task_id")
 
 
 async def list_workspace_memories(db: AsyncSession, include_archived: bool = False) -> list[MemoryRecord]:
@@ -75,7 +91,7 @@ async def retrieve_context_memories(db: AsyncSession, agent_id: uuid.UUID, query
     pinned = await list_pinned_for_agent(db, agent_id)
     candidates = await list_unpinned_active_for_agent(db, agent_id)
     ranked = sorted(candidates, key=lambda record: score_memory(record, query_text), reverse=True)
-    retrieved = pinned + ranked[: max(limit - len(pinned), 0)]
+    retrieved = pinned + ranked[:limit]
     await touch_memories(db, retrieved)
     return retrieved
 

@@ -2,7 +2,16 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Index, String
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    Index,
+    String,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import GUID, Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -46,6 +55,13 @@ class MemoryRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __table_args__ = (
         Index("ix_memory_records_agent_scope", "agent_id", "scope", "status"),
         Index("ix_memory_records_task_scope", "task_id", "scope", "status"),
+        Index("ix_memory_records_scope_status", "scope", "status"),
+        CheckConstraint(
+            "(scope != 'workspace' OR agent_id IS NULL) "
+            "AND (scope != 'agent' OR agent_id IS NOT NULL) "
+            "AND (scope != 'task' OR task_id IS NOT NULL)",
+            name="ck_memory_records_scope_owner",
+        ),
     )
 
     scope: Mapped[MemoryScope] = mapped_column(Enum(MemoryScope, native_enum=False, length=10), nullable=False)
