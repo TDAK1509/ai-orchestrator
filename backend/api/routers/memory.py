@@ -37,47 +37,54 @@ class CreateMemoryBody(BaseModel):
 
 @router.get("/workspace")
 async def list_workspace_memories_route(db=Depends(get_db)):
-    return [serialize(record) for record in await list_workspace_memories(db)]
+    return [serialize_memory(record) for record in await list_workspace_memories(db)]
+
+
+def serialize_memory(record: MemoryRecord) -> dict:
+    """codex P2: the generic serializer emits every mapped column, including the ~384-float embedding vector nothing in the UI uses -- drop it from the API response, not just from the frontend type."""
+    payload = serialize(record)
+    payload.pop("embedding", None)
+    return payload
 
 
 @router.get("/agents/{agent_id}")
 async def list_agent_memories_route(agent_id: uuid.UUID, db=Depends(get_db)):
-    return [serialize(record) for record in await list_agent_memories(db, agent_id)]
+    return [serialize_memory(record) for record in await list_agent_memories(db, agent_id)]
 
 
 @router.post("", status_code=201)
 async def create_memory_route(body: CreateMemoryBody, db=Depends(get_db)):
     record = await create_human_memory(db, body.scope, body.content, body.type, body.agent_id, body.task_id)
-    bus.publish(MEMORY_CREATED, serialize(record))
-    return serialize(record)
+    bus.publish(MEMORY_CREATED, serialize_memory(record))
+    return serialize_memory(record)
 
 
 @router.post("/{memory_id}/pin")
 async def pin_memory_route(memory_id: uuid.UUID, db=Depends(get_db)):
     record = await get_or_404(db, MemoryRecord, memory_id, "memory record")
     await pin_memory(db, record)
-    return serialize(record)
+    return serialize_memory(record)
 
 
 @router.post("/{memory_id}/unpin")
 async def unpin_memory_route(memory_id: uuid.UUID, db=Depends(get_db)):
     record = await get_or_404(db, MemoryRecord, memory_id, "memory record")
     await unpin_memory(db, record)
-    return serialize(record)
+    return serialize_memory(record)
 
 
 @router.post("/{memory_id}/archive")
 async def archive_memory_route(memory_id: uuid.UUID, db=Depends(get_db)):
     record = await get_or_404(db, MemoryRecord, memory_id, "memory record")
     await archive_memory(db, record)
-    return serialize(record)
+    return serialize_memory(record)
 
 
 @router.post("/{memory_id}/promote")
 async def promote_memory_route(memory_id: uuid.UUID, db=Depends(get_db)):
     record = await get_or_404(db, MemoryRecord, memory_id, "memory record")
     await promote_memory_to_workspace(db, record)
-    return serialize(record)
+    return serialize_memory(record)
 
 
 @router.get("/proposals")

@@ -23,7 +23,8 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
 
 
 def cosine_similarity(a: list[float] | None, b: list[float] | None) -> float:
-    if not a or not b:
+    """codex #11: a dimension mismatch (a stale row from a retired model, mid-sweep) must score as unrelated, not raise -- one bad row would otherwise crash retrieval for every agent until it's fixed."""
+    if not a or not b or len(a) != len(b):
         return 0.0
     norm_a, norm_b = vector_norm(a), vector_norm(b)
     if norm_a == 0 or norm_b == 0:

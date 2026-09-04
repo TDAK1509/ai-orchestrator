@@ -152,7 +152,7 @@ async def resume_with_session_id(db, runtime_service: RuntimeService, repo_root:
 
 async def resume_from_checkpoint(db, runtime_service: RuntimeService, repo_root: Path, agent: Agent, task: Task, task_worktree: TaskWorktree, agent_session: AgentSession, policy: TaskRuntimePolicy) -> bool:
     """No claude_session_id survived the crash (Phase 0.2's stdin loss, or a crash before system/init): fall back to a fresh session seeded with the newest unused checkpoint, the same pattern session_rotation_service already uses for a deliberate rotation (B2.7)."""
-    checkpoint = await find_latest_unused_checkpoint(db, agent.id)
+    checkpoint = await find_latest_unused_checkpoint(db, agent.id, task.id)
     if checkpoint is None:
         return False
     allowed_servers = await resolve_agent_mcp_servers(db, repo_root, agent)

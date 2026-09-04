@@ -2,6 +2,7 @@
 """Phase 0.2: the process RuntimeService actually spawns, standing in for `claude`. It outlives the backend, so exit status, output and process identity become durable facts on disk instead of only living in a parent that can die."""
 import asyncio
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -9,10 +10,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from process import read_process_start_time
 
+# allow-comment: codex P1 -- stdout/stderr can carry source code, tool output or secrets, same sensitivity as mcp.json (which already gets 0600); unlike mcp.json these persist after the run, so a shared host's default umask must never leave them group/world-readable.
+RUN_DIR_MODE = 0o700
+RUN_FILE_MODE = 0o600
+
 
 async def main() -> int:
     run_directory, cwd, command = parse_args()
     run_directory.mkdir(parents=True, exist_ok=True)
+    os.chmod(run_directory, RUN_DIR_MODE)
     child = await spawn_child(command, cwd)
     write_proc_file(run_directory, child, command)
     await drain_until_exit(child, run_directory)
@@ -44,6 +50,7 @@ def write_exit_file(run_directory: Path, exit_code: int) -> None:
 def atomic_write_json(path: Path, payload: dict) -> None:
     tmp_path = path.with_suffix(".tmp")
     tmp_path.write_text(json.dumps(payload))
+    os.chmod(tmp_path, RUN_FILE_MODE)
     tmp_path.replace(path)
 
 
@@ -80,7 +87,7 @@ def close_child_stdin(child: asyncio.subprocess.Process) -> None:
 
 async def tee_stdout(child: asyncio.subprocess.Process, stdout_path: Path) -> None:
     """Mirrors claude's stdout to this script's own stdout (so a live OwnedProcess can read it directly, same as before) while also appending it to disk (so an AdoptedProcess can follow it after a restart)."""
-    with stdout_path.open("ab") as sink:
+    with open_private(stdout_path) as sink:
         async for raw_line in child.stdout:
             sys.stdout.buffer.write(raw_line)
             sys.stdout.buffer.flush()
@@ -89,10 +96,16 @@ async def tee_stdout(child: asyncio.subprocess.Process, stdout_path: Path) -> No
 
 
 async def drain_to_file(stream: asyncio.StreamReader, path: Path) -> None:
-    with path.open("ab") as sink:
+    with open_private(path) as sink:
         async for raw_line in stream:
             sink.write(raw_line)
             sink.flush()
+
+
+def open_private(path: Path):
+    handle = path.open("ab")
+    os.chmod(path, RUN_FILE_MODE)
+    return handle
 
 
 if __name__ == "__main__":

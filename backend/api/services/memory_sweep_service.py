@@ -11,6 +11,8 @@ from services.memory_embedding_service import sweep_missing_embeddings
 logger = logging.getLogger(__name__)
 
 SWEEP_INTERVAL_SECONDS = 300.0
+# allow-comment: codex P1 -- one fire-and-forget sweep per finished run plus a periodic loop, uncoordinated, could otherwise both pass find_existing_proposal_pairs before either commits and insert the same proposal twice.
+_SWEEP_LOCK = asyncio.Lock()
 
 
 def start_memory_sweep(session_factory) -> asyncio.Task:
@@ -42,7 +44,7 @@ async def run_memory_sweep_once_safely(session_factory) -> None:
 
 
 async def run_memory_sweep_once(session_factory) -> None:
-    async with session_factory() as db:
+    async with _SWEEP_LOCK, session_factory() as db:
         await sweep_missing_embeddings(db)
         await generate_consolidation_proposals(db)
         await archive_stale_memories(db)

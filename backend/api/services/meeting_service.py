@@ -37,6 +37,8 @@ async def create_meeting(db, topic: str, goal: str | None, participants: list[Ag
     """C1: every participant must be IDLE and claimed as a whole set, under the same slot lock task assignment uses -- no participant is ever left QUEUED, since promote_next_queued_agent assumes a queued agent has a task."""
     if not participants:
         raise ValueError("a meeting needs at least one participant")
+    if chair_agent_id is not None and chair_agent_id not in {agent.id for agent in participants}:
+        raise ValueError("chair_agent_id must be one of the participants")
     if not await claim_participants_or_fail(db, [agent.id for agent in participants], policy.max_concurrent_agents):
         raise ValueError("not every participant is idle, or there is not capacity for the whole meeting")
     meeting = await open_meeting_room(db, topic, goal, participants, facilitator_instructions, max_rounds, chair_agent_id)

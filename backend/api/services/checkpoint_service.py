@@ -26,16 +26,17 @@ async def create_checkpoint(db, agent_id: uuid.UUID, agent_session_id: uuid.UUID
 
 async def extract_memories_on_task_completion(db, agent_id: uuid.UUID, task_id: uuid.UUID, title: str, branch: str | None, landed_sha: str | None) -> list:
     """A1: the agent's own checkpoint is preferred (structured, no model pass); a task that never called write_checkpoint still leaves one fact behind instead of nothing."""
-    checkpoint = await find_latest_unused_checkpoint(db, agent_id)
+    checkpoint = await find_latest_unused_checkpoint(db, agent_id, task_id)
     if checkpoint is not None:
         return await extract_memories_from_checkpoint(db, checkpoint)
     return [await create_fallback_task_summary(db, agent_id, task_id, title, branch, landed_sha)]
 
 
-async def find_latest_unused_checkpoint(db, agent_id: uuid.UUID) -> AgentCheckpoint | None:
+async def find_latest_unused_checkpoint(db, agent_id: uuid.UUID, task_id: uuid.UUID) -> AgentCheckpoint | None:
+    """codex P1: scoped to the current task, not just the agent -- an unscoped lookup could hand completion extraction or crash resume a checkpoint written for a different, unrelated task."""
     query = (
         select(AgentCheckpoint)
-        .where(AgentCheckpoint.agent_id == agent_id, AgentCheckpoint.used_at.is_(None))
+        .where(AgentCheckpoint.agent_id == agent_id, AgentCheckpoint.task_id == task_id, AgentCheckpoint.used_at.is_(None))
         .order_by(AgentCheckpoint.created_at.desc())
         .limit(1)
     )

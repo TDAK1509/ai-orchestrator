@@ -2,7 +2,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from deps import get_db, get_policy, get_repo_root, get_runtime_service
@@ -13,6 +13,7 @@ from runtime.meeting_runtime import (
     force_close_out,
     run_single_round,
     start_meeting_loop,
+    terminate_meeting_processes,
 )
 from runtime.runtime_service import RuntimeService
 from serialization import serialize
@@ -35,7 +36,7 @@ class CreateMeetingBody(BaseModel):
     goal: str | None = None
     participant_agent_ids: list[uuid.UUID]
     facilitator_instructions: str | None = None
-    max_rounds: int = 3
+    max_rounds: int = Field(default=3, ge=1, le=20)
     chair_agent_id: uuid.UUID | None = None
 
 
@@ -63,8 +64,13 @@ async def create_meeting_route(body: CreateMeetingBody, db=Depends(get_db), poli
 
 
 async def load_participants(db, agent_ids: list[uuid.UUID]) -> list[Agent]:
-    query = select(Agent).where(Agent.id.in_(agent_ids))
-    return list((await db.execute(query)).scalars())
+    """codex P1: an IN query silently drops unknown or duplicate ids -- a client asking for 3 participants must not get a meeting of 2 with no error."""
+    unique_ids = list(dict.fromkeys(agent_ids))
+    query = select(Agent).where(Agent.id.in_(unique_ids))
+    participants = list((await db.execute(query)).scalars())
+    if len(participants) != len(unique_ids):
+        raise ValueError("one or more participant_agent_ids do not exist")
+    return participants
 
 
 @router.get("/{meeting_id}/messages")
@@ -121,4 +127,5 @@ async def end_meeting_route(meeting_id: uuid.UUID, body: EndMeetingBody, db=Depe
     meeting = await get_or_404(db, Meeting, meeting_id, "meeting")
     main_room = await ensure_main_room(db)
     meeting = await end_meeting(db, runtime_service, repo_root, policy, meeting, main_room, body.summary, body.decisions, body.action_items, body.unresolved_questions)
+    await terminate_meeting_processes(runtime_service, meeting.id)
     return serialize(meeting)

@@ -259,12 +259,34 @@ def build_outcome_prompt(strict: bool) -> str:
 
 
 def parse_outcome_json(content: str) -> dict | None:
+    """codex P2: a malformed list field (e.g. "decisions": "abc") must not reach extract_memories_from_meeting -- it iterates that field expecting a list of strings, and a bare string would yield one garbage memory per character."""
+    parsed = extract_json_object(content)
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("summary"), str):
+        return None
+    return normalize_outcome(parsed)
+
+
+def extract_json_object(content: str) -> object | None:
     try:
         candidate = content[content.index("{") : content.rindex("}") + 1]
-        parsed = json.loads(candidate)
+        return json.loads(candidate)
     except (ValueError, json.JSONDecodeError):
         return None
-    return parsed if isinstance(parsed, dict) and isinstance(parsed.get("summary"), str) else None
+
+
+def normalize_outcome(parsed: dict) -> dict:
+    return {
+        "summary": parsed["summary"],
+        "decisions": as_string_list(parsed.get("decisions")),
+        "action_items": as_string_list(parsed.get("action_items")),
+        "unresolved_questions": as_string_list(parsed.get("unresolved_questions")),
+    }
+
+
+def as_string_list(value) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
 
 
 def fallback_outcome() -> dict:
