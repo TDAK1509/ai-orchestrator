@@ -9,10 +9,13 @@ from models.session import AgentSession, ExecutionRun, RunStatus
 from models.task import Task, TaskStatus
 from runtime.runtime_service import RuntimeService
 from services.memory_service import archive_memory, list_agent_memories
+from services.room_service import ensure_main_room
 
 
 async def hire_agent(db: AsyncSession, name: str, role: str, instructions: str = "") -> Agent:
-    agent = Agent(id=uuid.uuid4(), name=name, role=role, instructions=instructions)
+    """Rule 1 (README 23): there is always a Main Room, and every agent starts there."""
+    main_room = await ensure_main_room(db)
+    agent = Agent(id=uuid.uuid4(), name=name, role=role, instructions=instructions, room_id=main_room.id)
     db.add(agent)
     await commit(db)
     return agent
@@ -42,6 +45,7 @@ async def fire_agent(db: AsyncSession, runtime_service: RuntimeService, agent: A
     await archive_private_memory(db, agent)
     agent.active = False
     agent.status = AgentStatus.IDLE
+    agent.room_id = None
     await commit(db)
     return agent
 
@@ -78,6 +82,8 @@ async def release_unfinished_task(db: AsyncSession, agent: Agent) -> None:
 
 
 async def restore_agent(db: AsyncSession, agent: Agent) -> Agent:
+    main_room = await ensure_main_room(db)
     agent.active = True
+    agent.room_id = main_room.id
     await commit(db)
     return agent
