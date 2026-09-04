@@ -26,8 +26,12 @@ async def find_main_room(db) -> Room | None:
 
 
 async def move_agent_to_room(db, agent: Agent, room: Room) -> None:
-    agent.room_id = room.id
+    place_agent_in_room(agent, room)
     await commit(db)
+
+
+def place_agent_in_room(agent: Agent, room: Room) -> None:
+    agent.room_id = room.id
 
 
 async def list_rooms(db) -> list[Room]:
@@ -35,4 +39,5 @@ async def list_rooms(db) -> list[Room]:
 
 
 async def list_room_agents(db, room_id: uuid.UUID) -> list[Agent]:
-    return list((await db.execute(select(Agent).where(Agent.room_id == room_id))).scalars())
+    query = select(Agent).where(Agent.room_id == room_id, Agent.active.is_(True))
+    return list((await db.execute(query)).scalars())

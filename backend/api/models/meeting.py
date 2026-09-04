@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Enum, ForeignKey, String
+from sqlalchemy import JSON, DateTime, Enum, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import GUID, Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -39,3 +39,13 @@ class MeetingMessage(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     meeting_id: Mapped[uuid.UUID] = mapped_column(GUID(), ForeignKey("meetings.id"), nullable=False, index=True)
     agent_id: Mapped[uuid.UUID] = mapped_column(GUID(), ForeignKey("agents.id"), nullable=False)
     content: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class MeetingParticipant(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Who was invited is recorded here, independent of where an agent's room_id points right now (an agent can be moved into a later meeting without erasing this one's roster)."""
+
+    __tablename__ = "meeting_participants"
+    __table_args__ = (UniqueConstraint("meeting_id", "agent_id", name="uq_meeting_participants_meeting_agent"),)
+
+    meeting_id: Mapped[uuid.UUID] = mapped_column(GUID(), ForeignKey("meetings.id"), nullable=False, index=True)
+    agent_id: Mapped[uuid.UUID] = mapped_column(GUID(), ForeignKey("agents.id"), nullable=False)
