@@ -1,21 +1,31 @@
+import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy import DateTime, Enum, ForeignKey, String, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import GUID, Base, TimestampMixin, UUIDPrimaryKeyMixin, utcnow
 
 
+class SkillSource(str, enum.Enum):
+    GLOBAL = "global"
+    CUSTOM = "custom"
+
+
 class Skill(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """A reference into the repository-backed Skill Catalog (README 15): git is the source of truth, this row is a queryable index of it."""
+    """A queryable index of the Skill Catalog (README 15): a GLOBAL row mirrors this repository's skills/ directory, a CUSTOM row is authored in the UI and owns its own instructions."""
 
     __tablename__ = "skills"
 
     slug: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     description: Mapped[str | None] = mapped_column(String, nullable=True)
-    repository_path: Mapped[str] = mapped_column(String(500), nullable=False)
+    repository_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    source: Mapped[SkillSource] = mapped_column(
+        Enum(SkillSource, native_enum=False, length=10), default=SkillSource.CUSTOM, server_default=text("'CUSTOM'"), nullable=False
+    )
+    instructions: Mapped[str | None] = mapped_column(String, nullable=True)
 
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 

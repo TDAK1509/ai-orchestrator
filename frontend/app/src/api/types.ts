@@ -64,12 +64,16 @@ export interface AttentionEvent {
   resolved_at: string | null
 }
 
+export type SkillSource = "global" | "custom"
+
 export interface Skill {
   id: string
   slug: string
   name: string
   description: string | null
   instructions: string
+  source: SkillSource
+  repository_path: string | null
   created_at: string
   updated_at: string | null
 }
