@@ -1,11 +1,14 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from db import commit
+from events.bus import bus
+from events.schema import MEMORY_CREATED
 from models.base import utcnow
 from models.checkpoint import AgentCheckpoint
-from models.memory import MemoryScope, MemorySourceType, MemoryType
+from models.memory import MemoryRecord, MemoryScope, MemorySourceType, MemoryType
+from serialization import serialize
 from services.memory_service import build_memory
 
 
@@ -21,16 +24,12 @@ async def create_checkpoint(db, agent_id: uuid.UUID, agent_session_id: uuid.UUID
     return checkpoint
 
 
-async def extract_memories_from_checkpoint(db, checkpoint: AgentCheckpoint) -> list:
-    """No model pass (README 32.2): the checkpoint's own fields become memories directly. Marks the checkpoint used in the same commit, so calling this twice for the same checkpoint is rejected rather than duplicating memories."""
-    if checkpoint.used_at is not None:
-        raise ValueError(f"checkpoint {checkpoint.id} was already consumed at {checkpoint.used_at}")
-    records = [build_summary_memory(checkpoint), *build_field_memories(checkpoint)]
-    for record in records:
-        db.add(record)
-    checkpoint.used_at = utcnow()
-    await commit(db)
-    return records
+async def extract_memories_on_task_completion(db, agent_id: uuid.UUID, task_id: uuid.UUID, title: str, branch: str | None, landed_sha: str | None) -> list:
+    """A1: the agent's own checkpoint is preferred (structured, no model pass); a task that never called write_checkpoint still leaves one fact behind instead of nothing."""
+    checkpoint = await find_latest_unused_checkpoint(db, agent_id)
+    if checkpoint is not None:
+        return await extract_memories_from_checkpoint(db, checkpoint)
+    return [await create_fallback_task_summary(db, agent_id, task_id, title, branch, landed_sha)]
 
 
 async def find_latest_unused_checkpoint(db, agent_id: uuid.UUID) -> AgentCheckpoint | None:
@@ -41,6 +40,25 @@ async def find_latest_unused_checkpoint(db, agent_id: uuid.UUID) -> AgentCheckpo
         .limit(1)
     )
     return (await db.execute(query)).scalars().first()
+
+
+async def extract_memories_from_checkpoint(db, checkpoint: AgentCheckpoint) -> list:
+    """No model pass (README 32.2): the checkpoint's own fields become memories directly. A1.2: the claim and the memory inserts share this one commit, so a racing caller can't extract the same checkpoint twice."""
+    if not await claim_checkpoint(db, checkpoint.id):
+        raise ValueError(f"checkpoint {checkpoint.id} was already consumed")
+    checkpoint.used_at = utcnow()
+    records = [build_summary_memory(checkpoint), *build_field_memories(checkpoint)]
+    for record in records:
+        db.add(record)
+    await commit(db)
+    publish_memories_created(records)
+    return records
+
+
+async def claim_checkpoint(db, checkpoint_id: uuid.UUID) -> bool:
+    stmt = update(AgentCheckpoint).where(AgentCheckpoint.id == checkpoint_id, AgentCheckpoint.used_at.is_(None)).values(used_at=utcnow())
+    result = await db.execute(stmt)
+    return result.rowcount > 0
 
 
 def build_summary_memory(checkpoint: AgentCheckpoint):
@@ -63,3 +81,27 @@ def build_checkpoint_memory(checkpoint: AgentCheckpoint, content: str, type_: Me
         MemoryScope.AGENT, content, type_, checkpoint.agent_id, checkpoint.task_id,
         importance=0.5, pinned=False, source_type=MemorySourceType.AGENT, source_id=str(checkpoint.id),
     )
+
+
+async def create_fallback_task_summary(db, agent_id: uuid.UUID, task_id: uuid.UUID, title: str, branch: str | None, landed_sha: str | None) -> MemoryRecord:
+    """A1.3/4: AGENT-scoped, since MemoryScope.TASK is unreachable today."""
+    content = describe_landed_task(title, branch, landed_sha)
+    record = build_memory(MemoryScope.AGENT, content, MemoryType.TASK_SUMMARY, agent_id, task_id, importance=0.5, pinned=False, source_type=MemorySourceType.TASK, source_id=str(task_id))
+    db.add(record)
+    await commit(db)
+    publish_memories_created([record])
+    return record
+
+
+def describe_landed_task(title: str, branch: str | None, landed_sha: str | None) -> str:
+    parts = [f"Completed task: {title}"]
+    if branch:
+        parts.append(f"branch {branch}")
+    if landed_sha:
+        parts.append(f"landed at {landed_sha}")
+    return ", ".join(parts)
+
+
+def publish_memories_created(records: list[MemoryRecord]) -> None:
+    for record in records:
+        bus.publish(MEMORY_CREATED, serialize(record))

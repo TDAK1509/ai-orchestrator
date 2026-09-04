@@ -26,7 +26,10 @@ from runtime import worktree as worktree_ops
 from runtime.mcp_config import McpServerRef
 from runtime.runtime_service import RuntimeService
 from serialization import serialize
-from services.checkpoint_service import find_latest_unused_checkpoint
+from services.checkpoint_service import (
+    extract_memories_on_task_completion,
+    find_latest_unused_checkpoint,
+)
 from services.context_builder import build_initial_message
 from services.mcp_service import (
     default_pool_paths,
@@ -159,18 +162,24 @@ async def resume_from_checkpoint(db, runtime_service: RuntimeService, repo_root:
 
 async def land_or_block(db, agent: Agent, task: Task, task_worktree: TaskWorktree, repo_root: Path, policy: TaskRuntimePolicy) -> None:
     try:
-        await land_task(db, task, task_worktree, repo_root, policy)
+        await land_task(db, agent, task, task_worktree, repo_root, policy)
     except Exception as error:  # noqa: BLE001 - a landing failure must block the task, not vanish in a background task
         await block_on_landing_failure(db, agent, task, error)
         return
     await release_agent(db, agent)
 
 
-async def land_task(db, task: Task, task_worktree: TaskWorktree, repo_root: Path, policy: TaskRuntimePolicy) -> TaskMerge:
+async def land_task(db, agent: Agent, task: Task, task_worktree: TaskWorktree, repo_root: Path, policy: TaskRuntimePolicy) -> TaskMerge:
     path = Path(task_worktree.path)
-    await worktree_ops.commit_worktree(path, f"{task.title}\n\nAgent Office task {task.id}")
+    landed_sha = await worktree_ops.commit_worktree(path, f"{task.title}\n\nAgent Office task {task.id}")
     if policy.merge_type == MergeType.PR:
         await worktree_ops.push_worktree(path, task_worktree.branch)
+    merge = await record_landed_merge(db, task, task_worktree, repo_root, policy)
+    await extract_completion_memories_safely(db, agent, task, task_worktree.branch, landed_sha)
+    return merge
+
+
+async def record_landed_merge(db, task: Task, task_worktree: TaskWorktree, repo_root: Path, policy: TaskRuntimePolicy) -> TaskMerge:
     merge = await record_merge(task, task_worktree, repo_root, policy)
     db.add(merge)
     task.status = TaskStatus.DONE
@@ -178,6 +187,14 @@ async def land_task(db, task: Task, task_worktree: TaskWorktree, repo_root: Path
     await commit(db)
     bus.publish(TASK_COMPLETED, serialize(task))
     return merge
+
+
+async def extract_completion_memories_safely(db, agent: Agent, task: Task, branch: str, landed_sha: str | None) -> None:
+    """A1.5: a broken extraction must not undo a landing that already succeeded above."""
+    try:
+        await extract_memories_on_task_completion(db, agent.id, task.id, task.title, branch, landed_sha)
+    except Exception:
+        logger.exception("memory extraction failed for task %s", task.id)
 
 
 async def record_merge(task: Task, task_worktree: TaskWorktree, repo_root: Path, policy: TaskRuntimePolicy) -> TaskMerge:

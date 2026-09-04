@@ -11,16 +11,21 @@ from services.skill_service import list_agent_skills, read_instructions, skill_d
 
 async def build_initial_message(db, agent: Agent, task: Task, repo_root: Path, allowed_servers: list[McpServerRef], checkpoint: AgentCheckpoint | None = None) -> dict:
     """Combines identity + skills + MCP + memory + task (README 17.4/32.3): the CLI has no channel for this but the first user turn. A checkpoint, when given, rebuilds a rotated session's context (17.5) instead of starting from nothing."""
-    sections = [
+    sections = await render_message_sections(db, agent, task, repo_root, allowed_servers, checkpoint)
+    content = "\n\n".join(section for section in sections if section)
+    return {"type": "user", "message": {"role": "user", "content": content}}
+
+
+async def render_message_sections(db, agent: Agent, task: Task, repo_root: Path, allowed_servers: list[McpServerRef], checkpoint: AgentCheckpoint | None) -> list[str]:
+    return [
         render_identity(agent),
         await render_skills(db, agent, repo_root),
         render_mcp_capabilities(allowed_servers),
         await render_memory(db, agent, task),
         render_checkpoint(checkpoint),
         render_task(task),
+        render_checkpoint_instruction(),
     ]
-    content = "\n\n".join(section for section in sections if section)
-    return {"type": "user", "message": {"role": "user", "content": content}}
 
 
 def render_checkpoint(checkpoint: AgentCheckpoint | None) -> str:
@@ -83,3 +88,8 @@ def build_query_text(task: Task) -> str:
 
 def render_task(task: Task) -> str:
     return f"## Task\n{task.title}\n\n{task.description}" if task.description else f"## Task\n{task.title}"
+
+
+def render_checkpoint_instruction() -> str:
+    """A1.1: nothing extracts memory from a finished task unless the agent leaves one behind (README 32.2) -- so ask for it explicitly on every run, not only a rotated one."""
+    return "## Before you finish\nCall the checkpoint tool's write_checkpoint with a summary of what you did, any decisions, discoveries, blockers or risks, before ending your turn."
