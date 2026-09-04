@@ -28,6 +28,11 @@ export const api = {
   delete: <T>(path: string) => request<T>("DELETE", path),
 }
 
+// allow-comment: any value interpolated into a URL path that didn't originate as a UUID from our own backend (e.g. an MCP server name from .mcp.json) must go through this, or a value like "../.." can retarget the request to a different endpoint entirely.
+export function pathSegment(value: string): string {
+  return encodeURIComponent(value)
+}
+
 export function wsUrl(): string {
   const url = new URL(BASE_URL)
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:"

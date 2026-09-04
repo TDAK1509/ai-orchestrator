@@ -1,8 +1,13 @@
 import { useAgentsStore } from "../stores/agents"
 import { useAttentionStore } from "../stores/attention"
 import { useActivityStore } from "../stores/activity"
+import { useMcpStore } from "../stores/mcp"
+import { useMeetingsStore } from "../stores/meetings"
+import { useMemoryStore } from "../stores/memory"
+import { useRoomsStore } from "../stores/rooms"
+import { useSkillsStore } from "../stores/skills"
 import { useTasksStore } from "../stores/tasks"
-import type { Agent, AttentionEvent, DecisionRequest, RuntimeEventPayload, Task } from "../api/types"
+import type { Agent, AttentionEvent, DecisionRequest, Meeting, MeetingMessage, MemoryRecord, RuntimeEventPayload, Skill, Task } from "../api/types"
 import { connectRealtime, onEvent, onOpen } from "./socket"
 
 const AGENT_EVENTS = new Set(["agent.created", "agent.fired", "agent.status_changed"])
@@ -49,12 +54,23 @@ type EnvelopeHandler = (data: unknown) => void
 function buildRouter() {
   const agents = useAgentsStore()
   const tasks = useTasksStore()
-  const byType = { ...attentionHandlers(useAttentionStore()), ...activityHandlers(useActivityStore()) }
+  const byType = buildByTypeHandlers()
 
   return (envelope: { type: string; data: unknown }) => {
     if (AGENT_EVENTS.has(envelope.type)) agents.upsert(envelope.data as Agent)
     else if (TASK_EVENTS.has(envelope.type)) tasks.upsert(envelope.data as Task)
     else byType[envelope.type]?.(envelope.data)
+  }
+}
+
+function buildByTypeHandlers(): Record<string, EnvelopeHandler> {
+  return {
+    ...attentionHandlers(useAttentionStore()),
+    ...activityHandlers(useActivityStore()),
+    ...meetingHandlers(useMeetingsStore()),
+    ...skillHandlers(useSkillsStore()),
+    ...mcpHandlers(useMcpStore()),
+    "memory.created": (data) => useMemoryStore().receiveMemoryCreated(data as MemoryRecord),
   }
 }
 
@@ -70,5 +86,33 @@ function attentionHandlers(attention: ReturnType<typeof useAttentionStore>): Rec
 function activityHandlers(activity: ReturnType<typeof useActivityStore>): Record<string, EnvelopeHandler> {
   return {
     "runtime.event": (data) => activity.receiveRuntimeEvent(data as RuntimeEventPayload),
+  }
+}
+
+function meetingHandlers(meetings: ReturnType<typeof useMeetingsStore>): Record<string, EnvelopeHandler> {
+  return {
+    "meeting.created": (data) => receiveMeetingChange(meetings, data as Meeting),
+    "meeting.ended": (data) => receiveMeetingChange(meetings, data as Meeting),
+    "meeting.message": (data) => meetings.receiveMessage(data as MeetingMessage),
+  }
+}
+
+function receiveMeetingChange(meetings: ReturnType<typeof useMeetingsStore>, meeting: Meeting): void {
+  meetings.upsertMeeting(meeting)
+  useRoomsStore().fetchRooms()
+}
+
+function skillHandlers(skills: ReturnType<typeof useSkillsStore>): Record<string, EnvelopeHandler> {
+  return {
+    "skill.created": (data) => skills.fetchSkill((data as Skill).id),
+    "skill.updated": (data) => skills.fetchSkill((data as Skill).id),
+    "skill.deleted": (data) => skills.removeById((data as Skill).id),
+  }
+}
+
+function mcpHandlers(mcp: ReturnType<typeof useMcpStore>): Record<string, EnvelopeHandler> {
+  return {
+    "agent.mcp_granted": (data) => mcp.receivePermissionChange((data as { agent_id: string }).agent_id),
+    "agent.mcp_revoked": (data) => mcp.receivePermissionChange((data as { agent_id: string }).agent_id),
   }
 }

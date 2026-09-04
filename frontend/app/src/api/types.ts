@@ -81,6 +81,58 @@ export interface Room {
   created_at: string
 }
 
+export type MeetingStatus = "active" | "ended"
+
+export interface Meeting {
+  id: string
+  room_id: string
+  topic: string
+  goal: string | null
+  status: MeetingStatus
+  ended_at: string | null
+  summary: string | null
+  decisions: string[]
+  action_items: string[]
+  unresolved_questions: string[]
+  created_at: string
+}
+
+export interface MeetingMessage {
+  id: string
+  meeting_id: string
+  agent_id: string
+  content: string
+  created_at: string
+}
+
+export type MemoryScope = "workspace" | "agent" | "task"
+export type MemoryType = "fact" | "decision" | "preference" | "lesson" | "task_summary" | "project_context" | "convention" | "architecture"
+
+export interface MemoryRecord {
+  id: string
+  scope: MemoryScope
+  agent_id: string | null
+  task_id: string | null
+  type: MemoryType
+  content: string
+  importance: number
+  pinned: boolean
+  status: "active" | "superseded" | "archived"
+  created_at: string
+}
+
+export interface McpServerRef {
+  name: string
+  transport: string
+}
+
+export interface AgentMcpPermission {
+  id: string
+  agent_id: string
+  mcp_server_name: string
+  allowed: boolean
+}
+
 export interface RuntimeEventPayload {
   agentId: string
   taskId: string
