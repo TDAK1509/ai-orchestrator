@@ -9,12 +9,16 @@ dependencies = [
   "asyncpg>=0.29",
   "pydantic>=2.7",
   "mcp>=2.0",
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "websockets>=13",
 ]
 
 [project.optional-dependencies]
 dev = [
   "aiosqlite>=0.20",
   "ruff>=0.5",
+  "httpx>=0.27",
 ]
 
 [build-system]
@@ -22,4 +26,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["models*", "runtime*", "services*"]
+include = ["models*", "runtime*", "services*", "events*", "routers*"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path", "fastapi.Body"]

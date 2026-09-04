@@ -91,6 +91,10 @@ async def list_assigned_agents(db, skill_id: uuid.UUID) -> list[Agent]:
     return list((await db.execute(query)).scalars())
 
 
+async def list_skills(db) -> list[Skill]:
+    return list((await db.execute(select(Skill).order_by(Skill.name))).scalars())
+
+
 def skill_dir(config_worktree: Path, slug: str) -> Path:
     if not slug:
         raise ValueError("skill slug must not be empty: it would resolve to the catalog directory itself")

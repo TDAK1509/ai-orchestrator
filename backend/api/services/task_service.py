@@ -3,7 +3,11 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from sqlalchemy import select
+
 from db import commit
+from events.bus import bus
+from events.schema import TASK_BLOCKED, TASK_COMPLETED
 from models.agent import Agent, AgentStatus
 from models.attention import AttentionEvent, AttentionType
 from models.base import utcnow
@@ -15,6 +19,7 @@ from runtime import landing
 from runtime import worktree as worktree_ops
 from runtime.mcp_config import McpServerRef
 from runtime.runtime_service import RuntimeService
+from serialization import serialize
 from services.context_builder import build_initial_message
 from services.mcp_service import (
     default_pool_paths,
@@ -121,6 +126,7 @@ async def land_task(db, task: Task, task_worktree: TaskWorktree, repo_root: Path
     task.status = TaskStatus.DONE
     task.completed_at = utcnow()
     await commit(db)
+    bus.publish(TASK_COMPLETED, serialize(task))
     return merge
 
 
@@ -163,6 +169,7 @@ async def block_task(db, agent: Agent, task: Task, title: str, message: str) -> 
     event = AttentionEvent(id=uuid.uuid4(), type=AttentionType.TASK_FAILED, agent_id=agent.id, task_id=task.id, title=title, message=message)
     db.add(event)
     await commit(db)
+    bus.publish(TASK_BLOCKED, serialize(task))
     return event
 
 
@@ -179,3 +186,7 @@ async def promote_next_queued_agent(db, runtime_service: RuntimeService, repo_ro
     task = await db.get(Task, next_agent.current_task_id)
     await start_agent_on_task(db, runtime_service, repo_root, next_agent, task, policy)
     return next_agent
+
+
+async def list_tasks(db) -> list[Task]:
+    return list((await db.execute(select(Task).order_by(Task.created_at))).scalars())
