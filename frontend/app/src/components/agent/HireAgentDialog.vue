@@ -14,7 +14,7 @@ const teamId = ref("")
 const submitting = ref(false)
 
 onMounted(() => {
-  teams.fetchTeams()
+  if (!teams.teams.length) teams.fetchTeams()
 })
 
 function canSubmit(): boolean {

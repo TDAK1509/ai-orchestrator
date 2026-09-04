@@ -1,4 +1,7 @@
 .PHONY: start stop install migrate db logs clean
+# make's default recipe shell is /bin/sh, which is dash on this platform and rejects
+# `wait -n` below ("Illegal option -n"); bash 4.3+ supports it.
+SHELL := bash
 -include .env
 export
 

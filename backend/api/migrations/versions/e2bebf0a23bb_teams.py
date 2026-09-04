@@ -55,8 +55,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # A downgraded MemoryScope enum has no TEAM member, so any TEAM row must stop being one before the
-    # column disappears: re-scope it to WORKSPACE (team_id already becomes NULL below) rather than delete it.
-    op.execute("UPDATE memory_records SET scope = 'WORKSPACE' WHERE scope = 'TEAM'")
+    # column disappears. Deleted, not re-scoped to WORKSPACE: a team's memory is private to its members,
+    # and re-scoping would inject it into every agent's context instead.
+    op.execute("DELETE FROM memory_records WHERE scope = 'TEAM'")
 
     with op.batch_alter_table('memory_records') as batch_op:
         batch_op.drop_constraint('ck_memory_records_scope_owner', type_='check')

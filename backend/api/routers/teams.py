@@ -1,10 +1,10 @@
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from deps import get_db
-from lookups import get_or_404
+from lookups import get_active_or_404, get_or_404
 from models.agent import Agent
 from models.team import Team
 from serialization import serialize
@@ -44,7 +44,7 @@ async def list_team_agents_route(team_id: uuid.UUID, db=Depends(get_db)):
 
 @router.post("/{team_id}/agents/{agent_id}")
 async def assign_agent_to_team_route(team_id: uuid.UUID, agent_id: uuid.UUID, db=Depends(get_db)):
-    team = await get_or_404(db, Team, team_id, "team")
+    team = await get_active_or_404(db, Team, team_id, "team")
     agent = await get_or_404(db, Agent, agent_id, "agent")
     agent = await assign_agent_to_team(db, agent, team)
     return serialize(agent)
@@ -54,8 +54,14 @@ async def assign_agent_to_team_route(team_id: uuid.UUID, agent_id: uuid.UUID, db
 async def unassign_agent_route(team_id: uuid.UUID, agent_id: uuid.UUID, db=Depends(get_db)):
     await get_or_404(db, Team, team_id, "team")
     agent = await get_or_404(db, Agent, agent_id, "agent")
+    require_member_of_team(agent, team_id)
     agent = await unassign_agent(db, agent)
     return serialize(agent)
+
+
+def require_member_of_team(agent: Agent, team_id: uuid.UUID) -> None:
+    if agent.team_id != team_id:
+        raise HTTPException(status_code=404, detail="agent is not a member of this team")
 
 
 @router.delete("/{team_id}")

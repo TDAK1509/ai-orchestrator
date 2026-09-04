@@ -5,8 +5,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import commit
 from models.agent import Agent
+from models.memory import MemoryStatus
 from models.team import Team
-from services.memory_service import archive_memory, list_team_memories
+from services.memory_service import list_team_memories
 
 
 async def create_team(db: AsyncSession, name: str, description: str = "") -> Team:
@@ -39,7 +40,7 @@ async def unassign_agent(db: AsyncSession, agent: Agent) -> Agent:
 
 
 async def archive_team(db: AsyncSession, team: Team) -> Team:
-    """Never a hard delete, mirroring fire_agent: archive the team's memory and clear team_id off every referencing agent first, so nothing is left pointing at an archived team, then flip the team itself."""
+    """Never a hard delete, mirroring fire_agent: archive the team's memory and clear team_id off every referencing agent first, so nothing is left pointing at an archived team, then flip the team itself. One commit for all of it (README 32.4's reasoning applies here too): archive_memory's own per-record commit is bypassed on purpose, so a crash partway never leaves the team inactive with only some memories archived."""
     team.active = False
     await archive_team_memories(db, team.id)
     await clear_team_from_agents(db, team.id)
@@ -49,7 +50,7 @@ async def archive_team(db: AsyncSession, team: Team) -> Team:
 
 async def archive_team_memories(db: AsyncSession, team_id: uuid.UUID) -> None:
     for record in await list_team_memories(db, team_id):
-        await archive_memory(db, record)
+        record.status = MemoryStatus.ARCHIVED
 
 
 async def clear_team_from_agents(db: AsyncSession, team_id: uuid.UUID) -> None:

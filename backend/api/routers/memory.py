@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from deps import get_db
 from events.bus import bus
 from events.schema import MEMORY_CREATED
-from lookups import get_or_404
+from lookups import get_active_or_404, get_or_404
 from models.memory import MemoryProposal, MemoryRecord, MemoryScope, MemoryType
 from models.team import Team
 from serialization import serialize
@@ -64,7 +64,7 @@ async def list_team_memories_route(team_id: uuid.UUID, db=Depends(get_db)):
 @router.post("", status_code=201)
 async def create_memory_route(body: CreateMemoryBody, db=Depends(get_db)):
     if body.team_id is not None:
-        await get_or_404(db, Team, body.team_id, "team")
+        await get_active_or_404(db, Team, body.team_id, "team")
     record = await create_human_memory(db, body.scope, body.content, body.type, body.agent_id, body.task_id, body.team_id)
     bus.publish(MEMORY_CREATED, serialize_memory(record))
     return serialize_memory(record)

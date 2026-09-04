@@ -1,15 +1,30 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue"
+import { computed, onMounted, ref } from "vue"
 import type { MemoryType } from "../api/types"
+import { useAgentsStore } from "../stores/agents"
 import { useMemoryStore } from "../stores/memory"
 import { useTeamsStore } from "../stores/teams"
 
 const teams = useTeamsStore()
+const agents = useAgentsStore()
 const memory = useMemoryStore()
 const newTeamName = ref("")
 const newTeamDescription = ref("")
 const draftContentByTeamId = ref<Record<string, string>>({})
 const draftTypeByTeamId = ref<Record<string, MemoryType>>({})
+const draftAssigneeByTeamId = ref<Record<string, string>>({})
+const confirmingArchive = ref<string | null>(null)
+
+const membersByTeamId = computed(() => {
+  const grouped: Record<string, typeof agents.agents> = {}
+  for (const agent of agents.activeAgents) {
+    if (!agent.team_id) continue
+    ;(grouped[agent.team_id] ??= []).push(agent)
+  }
+  return grouped
+})
+
+const unassignedAgents = computed(() => (teamId: string) => agents.activeAgents.filter((agent) => agent.team_id !== teamId))
 
 onMounted(async () => {
   await teams.fetchTeams()
@@ -29,6 +44,18 @@ async function addTeamMemory(teamId: string): Promise<void> {
   await memory.createTeamMemory(teamId, content, draftTypeByTeamId.value[teamId] ?? "fact")
   draftContentByTeamId.value[teamId] = ""
 }
+
+async function assignAgent(teamId: string): Promise<void> {
+  const agentId = draftAssigneeByTeamId.value[teamId]
+  if (!agentId) return
+  await teams.assignAgent(teamId, agentId)
+  draftAssigneeByTeamId.value[teamId] = ""
+}
+
+async function confirmArchive(teamId: string): Promise<void> {
+  await teams.archiveTeam(teamId)
+  confirmingArchive.value = null
+}
 </script>
 
 <template>
@@ -41,17 +68,33 @@ async function addTeamMemory(teamId: string): Promise<void> {
     </div>
 
     <div v-for="team in teams.teams" :key="team.id" class="mt-4 rounded-lg border border-gray-200 bg-white p-3">
-      <h3 class="font-medium">{{ team.name }}</h3>
-      <p v-if="team.description" class="text-sm text-gray-500">{{ team.description }}</p>
+      <div class="flex items-start justify-between">
+        <div>
+          <h3 class="font-medium">{{ team.name }}</h3>
+          <p v-if="team.description" class="text-sm text-gray-500">{{ team.description }}</p>
+        </div>
+        <button v-if="confirmingArchive !== team.id" class="text-xs text-red-600" @click="confirmingArchive = team.id">Archive Team</button>
+        <div v-else class="flex shrink-0 gap-2 text-xs">
+          <button class="text-red-600" @click="confirmArchive(team.id)">Confirm</button>
+          <button class="text-gray-500" @click="confirmingArchive = null">Cancel</button>
+        </div>
+      </div>
 
       <h4 class="mt-3 text-xs font-semibold uppercase tracking-wide text-gray-400">Members</h4>
       <ul class="mt-1 flex flex-col gap-1 text-sm">
-        <li v-for="agent in teams.agentsByTeamId[team.id] ?? []" :key="agent.id" class="flex items-center justify-between">
+        <li v-for="agent in membersByTeamId[team.id] ?? []" :key="agent.id" class="flex items-center justify-between">
           <span>{{ agent.name }} -- {{ agent.role }}</span>
           <button class="text-xs text-red-600" @click="teams.unassignAgent(team.id, agent.id)">Remove</button>
         </li>
-        <li v-if="!(teams.agentsByTeamId[team.id] ?? []).length" class="text-gray-400">No members yet.</li>
+        <li v-if="!(membersByTeamId[team.id] ?? []).length" class="text-gray-400">No members yet.</li>
       </ul>
+      <div class="mt-1 flex gap-2">
+        <select v-model="draftAssigneeByTeamId[team.id]" class="flex-1 rounded border border-gray-300 px-2 py-1 text-sm">
+          <option value="">Add an existing agent...</option>
+          <option v-for="agent in unassignedAgents(team.id)" :key="agent.id" :value="agent.id">{{ agent.name }}</option>
+        </select>
+        <button class="rounded border border-gray-300 px-3 py-1.5 text-sm" @click="assignAgent(team.id)">Add</button>
+      </div>
 
       <h4 class="mt-3 text-xs font-semibold uppercase tracking-wide text-gray-400">Team Memory</h4>
       <div class="mt-1 flex gap-2">

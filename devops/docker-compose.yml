@@ -10,7 +10,8 @@ services:
       POSTGRES_DB: agent_office
       POSTGRES_USER: agent_office
       POSTGRES_PASSWORD: agent_office
-    ports: ["5433:5432"]
+    # allow-comment: bound to 127.0.0.1 -- an unqualified host port publishes on every interface, so this dev database (fixed username/password) would otherwise be reachable from the network, not just this machine.
+    ports: ["127.0.0.1:5433:5432"]
     volumes: ["agent_office_pgdata:/var/lib/postgresql/data"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U agent_office -d agent_office"]

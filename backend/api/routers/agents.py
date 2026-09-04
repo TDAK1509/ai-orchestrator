@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from deps import get_db, get_runtime_service
 from events.bus import bus
 from events.schema import AGENT_CREATED, AGENT_FIRED
-from lookups import get_or_404
+from lookups import get_active_or_404, get_or_404
 from models.agent import Agent
 from models.team import Team
 from serialization import serialize
@@ -42,7 +42,7 @@ async def list_agents_route(db=Depends(get_db)):
 @router.post("", status_code=201)
 async def hire_agent_route(body: HireAgentBody, db=Depends(get_db)):
     if body.team_id is not None:
-        await get_or_404(db, Team, body.team_id, "team")
+        await get_active_or_404(db, Team, body.team_id, "team")
     agent = await hire_agent(db, body.name, body.role, body.instructions, body.team_id)
     bus.publish(AGENT_CREATED, serialize(agent))
     return serialize(agent)
