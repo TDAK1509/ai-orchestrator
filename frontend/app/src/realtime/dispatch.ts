@@ -93,6 +93,7 @@ function meetingHandlers(meetings: ReturnType<typeof useMeetingsStore>): Record<
   return {
     "meeting.created": (data) => receiveMeetingChange(meetings, data as Meeting),
     "meeting.ended": (data) => receiveMeetingChange(meetings, data as Meeting),
+    "meeting.updated": (data) => meetings.upsertMeeting(data as Meeting),
     "meeting.message": (data) => meetings.receiveMessage(data as MeetingMessage),
   }
 }

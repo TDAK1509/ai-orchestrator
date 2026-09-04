@@ -16,14 +16,18 @@ export const useMeetingsStore = defineStore("meetings", {
     async fetchMeetings() {
       this.meetings = await api.get<Meeting[]>("/meetings")
     },
-    async createMeeting(topic: string, goal: string | undefined, participantAgentIds: string[]) {
-      const meeting = await api.post<Meeting>("/meetings", { topic, goal, participant_agent_ids: participantAgentIds })
+    async createMeeting(topic: string, goal: string | undefined, participantAgentIds: string[], facilitatorInstructions?: string, maxRounds?: number) {
+      const meeting = await api.post<Meeting>("/meetings", {
+        topic, goal, participant_agent_ids: participantAgentIds,
+        facilitator_instructions: facilitatorInstructions || undefined,
+        max_rounds: maxRounds,
+      })
       this.meetings.push(meeting)
       await useRoomsStore().fetchRooms()
       return meeting
     },
-    async addMessage(meetingId: string, agentId: string, content: string) {
-      const message = await api.post<MeetingMessage>(`/meetings/${pathSegment(meetingId)}/messages`, { agent_id: agentId, content })
+    async addHumanMessage(meetingId: string, content: string) {
+      const message = await api.post<MeetingMessage>(`/meetings/${pathSegment(meetingId)}/messages`, { content })
       this.receiveMessage(message)
     },
     async fetchMessages(meetingId: string) {
@@ -33,6 +37,21 @@ export const useMeetingsStore = defineStore("meetings", {
       const existing = this.messagesByMeetingId[message.meeting_id] ?? []
       if (existing.some((m) => m.id === message.id)) return
       this.messagesByMeetingId[message.meeting_id] = [...existing, message]
+    },
+    async start(meetingId: string) {
+      this.upsertMeeting(await api.post<Meeting>(`/meetings/${pathSegment(meetingId)}/start`))
+    },
+    async runRound(meetingId: string) {
+      this.upsertMeeting(await api.post<Meeting>(`/meetings/${pathSegment(meetingId)}/run-round`))
+    },
+    async pause(meetingId: string) {
+      this.upsertMeeting(await api.post<Meeting>(`/meetings/${pathSegment(meetingId)}/pause`))
+    },
+    async stop(meetingId: string) {
+      this.upsertMeeting(await api.post<Meeting>(`/meetings/${pathSegment(meetingId)}/stop`))
+    },
+    async summarize(meetingId: string) {
+      this.upsertMeeting(await api.post<Meeting>(`/meetings/${pathSegment(meetingId)}/summarize`))
     },
     async endMeeting(meetingId: string, outcome: MeetingOutcome) {
       const meeting = await api.post<Meeting>(`/meetings/${pathSegment(meetingId)}/end`, outcome)

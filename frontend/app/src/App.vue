@@ -13,6 +13,7 @@ import SkillsView from "./views/SkillsView.vue"
 import McpView from "./views/McpView.vue"
 import MemoryView from "./views/MemoryView.vue"
 import { startRealtimeDispatch } from "./realtime/dispatch"
+import { useActivityStore } from "./stores/activity"
 import { useAgentsStore } from "./stores/agents"
 import { useAttentionStore } from "./stores/attention"
 import { useMcpStore } from "./stores/mcp"
@@ -30,6 +31,7 @@ const mcp = useMcpStore()
 const memory = useMemoryStore()
 const rooms = useRoomsStore()
 const meetings = useMeetingsStore()
+const activity = useActivityStore()
 
 const selectedAgent = ref<Agent | null>(null)
 const showCreateTask = ref(false)
@@ -48,6 +50,7 @@ onMounted(() => {
 })
 
 async function loadSnapshots(): Promise<void> {
+  activity.reset()
   await Promise.all([
     agents.fetchAgents(),
     tasks.fetchTasks(),
@@ -59,6 +62,7 @@ async function loadSnapshots(): Promise<void> {
     rooms.fetchRooms(),
     meetings.fetchMeetings(),
   ])
+  await Promise.all(meetings.active.map((meeting) => meetings.fetchMessages(meeting.id)))
 }
 
 function openAttentionEvent(event: AttentionEvent): void {

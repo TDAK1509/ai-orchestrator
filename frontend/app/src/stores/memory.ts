@@ -1,14 +1,19 @@
 import { defineStore } from "pinia"
 import { api, pathSegment } from "../api/client"
-import type { MemoryRecord, MemoryScope, MemoryType } from "../api/types"
+import type { MemoryProposal, MemoryRecord, MemoryScope, MemoryType } from "../api/types"
 
 export const useMemoryStore = defineStore("memory", {
   state: () => ({
     workspaceMemories: [] as MemoryRecord[],
+    agentMemoriesByAgentId: {} as Record<string, MemoryRecord[]>,
+    proposals: [] as MemoryProposal[],
   }),
   actions: {
-    async fetchWorkspaceMemories() {
-      this.workspaceMemories = await api.get<MemoryRecord[]>("/memory/workspace")
+    async fetchAgentMemories(agentId: string) {
+      this.agentMemoriesByAgentId[agentId] = await api.get<MemoryRecord[]>(`/memory/agents/${pathSegment(agentId)}`)
+    },
+    async fetchProposals() {
+      this.proposals = await api.get<MemoryProposal[]>("/memory/proposals")
     },
     async createWorkspaceMemory(content: string, type: MemoryType) {
       const record = await api.post<MemoryRecord>("/memory", { scope: "workspace" as MemoryScope, content, type })
@@ -24,6 +29,22 @@ export const useMemoryStore = defineStore("memory", {
     async archive(id: string) {
       await api.post(`/memory/${pathSegment(id)}/archive`)
       this.workspaceMemories = this.workspaceMemories.filter((record) => record.id !== id)
+    },
+    async promote(id: string, agentId: string) {
+      await api.post(`/memory/${pathSegment(id)}/promote`)
+      this.agentMemoriesByAgentId[agentId] = (this.agentMemoriesByAgentId[agentId] ?? []).filter((record) => record.id !== id)
+      await this.fetchWorkspaceMemories()
+    },
+    async fetchWorkspaceMemories() {
+      this.workspaceMemories = await api.get<MemoryRecord[]>("/memory/workspace")
+    },
+    async applyProposal(id: string) {
+      await api.post(`/memory/proposals/${pathSegment(id)}/apply`)
+      this.proposals = this.proposals.filter((proposal) => proposal.id !== id)
+    },
+    async dismissProposal(id: string) {
+      await api.post(`/memory/proposals/${pathSegment(id)}/dismiss`)
+      this.proposals = this.proposals.filter((proposal) => proposal.id !== id)
     },
     async updateAndRefetch(id: string, action: () => Promise<unknown>) {
       const record = (await action()) as MemoryRecord

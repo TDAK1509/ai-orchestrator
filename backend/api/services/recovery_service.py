@@ -23,11 +23,54 @@ async def recover_running_runs(db, runtime_service: RuntimeService, repo_root, p
         await recover_one_run_safely(db, runtime_service, repo_root, run, policy)
     await sweep_dangling_agents(db, runtime_service, repo_root, policy)
     await resume_pending_sessions(db, runtime_service, repo_root, policy)
+    await recover_meeting_runs(db, runtime_service)
 
 
 async def find_running_runs(db) -> list[ExecutionRun]:
-    query = select(ExecutionRun).where(ExecutionRun.status == RunStatus.RUNNING)
+    """C4: a meeting-bound session branches to recover_meeting_runs instead -- it has no task to reattach, resume or drive through finish_task_run."""
+    query = (
+        select(ExecutionRun)
+        .join(AgentSession, ExecutionRun.agent_session_id == AgentSession.id)
+        .where(ExecutionRun.status == RunStatus.RUNNING, AgentSession.meeting_id.is_(None))
+    )
     return list((await db.execute(query)).scalars())
+
+
+async def recover_meeting_runs(db, runtime_service: RuntimeService) -> None:
+    """C4/C5: a meeting's long-lived process is never adoptable across a restart -- terminate it on sight and pause its loop; a human (or the next scheduled round) resumes the conversation later via --resume."""
+    for run in await find_running_meeting_runs(db):
+        await recover_one_meeting_run_safely(db, runtime_service, run)
+
+
+async def find_running_meeting_runs(db) -> list[ExecutionRun]:
+    query = (
+        select(ExecutionRun)
+        .join(AgentSession, ExecutionRun.agent_session_id == AgentSession.id)
+        .where(ExecutionRun.status == RunStatus.RUNNING, AgentSession.meeting_id.isnot(None))
+    )
+    return list((await db.execute(query)).scalars())
+
+
+async def recover_one_meeting_run_safely(db, runtime_service: RuntimeService, run: ExecutionRun) -> None:
+    try:
+        await recover_one_meeting_run(db, runtime_service, run)
+    except Exception:
+        logger.exception("failed to recover meeting run %s at startup", run.id)
+
+
+async def recover_one_meeting_run(db, runtime_service: RuntimeService, run: ExecutionRun) -> None:
+    agent_session = await db.get(AgentSession, run.agent_session_id)
+    await runtime_service.finalize_meeting_run(run.id)
+    await pause_meeting_for_session(db, agent_session)
+
+
+async def pause_meeting_for_session(db, agent_session: AgentSession) -> None:
+    from models.meeting import Meeting, MeetingLoopState, MeetingStatus
+    from services.meeting_service import set_loop_state
+
+    meeting = await db.get(Meeting, agent_session.meeting_id)
+    if meeting is not None and meeting.status == MeetingStatus.ACTIVE:
+        await set_loop_state(db, meeting, MeetingLoopState.PAUSED)
 
 
 async def recover_one_run_safely(db, runtime_service, repo_root, run: ExecutionRun, policy) -> None:

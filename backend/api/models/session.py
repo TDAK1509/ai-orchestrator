@@ -2,21 +2,36 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import GUID, Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 
 class AgentSession(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """A Claude Code conversation. Spans one or more ExecutionRuns via --resume."""
+    """A Claude Code conversation, spanning one or more ExecutionRuns via --resume, belonging to exactly one of a task worktree or a meeting (C3)."""
 
     __tablename__ = "agent_sessions"
+    __table_args__ = (
+        CheckConstraint("(task_worktree_id IS NULL) != (meeting_id IS NULL)", name="ck_agent_sessions_exactly_one_parent"),
+        UniqueConstraint("meeting_id", "agent_id", name="uq_agent_sessions_meeting_agent"),
+    )
 
     agent_id: Mapped[uuid.UUID] = mapped_column(GUID(), ForeignKey("agents.id"), nullable=False)
-    task_worktree_id: Mapped[uuid.UUID] = mapped_column(
-        GUID(), ForeignKey("task_worktrees.id"), nullable=False
+    task_worktree_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("task_worktrees.id"), nullable=True
     )
+    meeting_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("meetings.id"), nullable=True)
     claude_session_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     cwd: Mapped[str] = mapped_column(String(500), nullable=False)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

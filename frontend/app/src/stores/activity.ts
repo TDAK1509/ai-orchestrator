@@ -15,5 +15,8 @@ export const useActivityStore = defineStore("activity", {
       const existing = this.byAgentId[payload.agentId] ?? []
       this.byAgentId[payload.agentId] = [...existing, payload].slice(-MAX_EVENTS_PER_AGENT)
     },
+    reset() {
+      this.byAgentId = {}
+    },
   },
 })

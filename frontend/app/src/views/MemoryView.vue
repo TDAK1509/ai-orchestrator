@@ -9,6 +9,7 @@ const type = ref<MemoryType>("fact")
 
 onMounted(() => {
   memory.fetchWorkspaceMemories()
+  memory.fetchProposals()
 })
 
 async function addMemory(): Promise<void> {
@@ -41,6 +42,17 @@ async function addMemory(): Promise<void> {
           <button v-if="!record.pinned" class="text-blue-600" @click="memory.pin(record.id)">Pin</button>
           <button v-else class="text-blue-600" @click="memory.unpin(record.id)">Unpin</button>
           <button class="text-red-600" @click="memory.archive(record.id)">Archive</button>
+        </div>
+      </div>
+    </div>
+
+    <h2 v-if="memory.proposals.length" class="mt-6 text-xs font-semibold uppercase tracking-wide text-gray-400">Consolidation Proposals</h2>
+    <div v-if="memory.proposals.length" class="mt-2 flex flex-col gap-2">
+      <div v-for="proposal in memory.proposals" :key="proposal.id" class="flex items-center justify-between rounded-lg border border-gray-200 bg-white p-3 text-sm">
+        <p>Similar memories found ({{ Math.round(proposal.similarity * 100) }}% match) -- supersede the older one?</p>
+        <div class="flex shrink-0 gap-2">
+          <button class="text-blue-600" @click="memory.applyProposal(proposal.id)">Apply</button>
+          <button class="text-gray-500" @click="memory.dismissProposal(proposal.id)">Dismiss</button>
         </div>
       </div>
     </div>

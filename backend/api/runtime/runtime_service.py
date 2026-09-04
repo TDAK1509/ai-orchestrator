@@ -13,6 +13,7 @@ from db import DEFAULT_DATABASE_URL
 from db import commit as db_commit
 from models.agent import Agent
 from models.base import utcnow
+from models.meeting import Meeting
 from models.session import AgentSession, BoundVia, ExecutionRun, RunStatus
 from models.worktree import TaskWorktree
 
@@ -36,6 +37,19 @@ class RuntimeSettings:
     ask_human_database_url: str | None = None
 
 
+@dataclass
+class RunTarget:
+    """C4: what a session runs against -- a task worktree (with a commit history to read) or a meeting (a plain cwd, no commits)."""
+
+    cwd: Path
+    task_worktree: TaskWorktree | None = None
+    meeting: Meeting | None = None
+
+    @property
+    def task_id(self) -> uuid.UUID | None:
+        return self.task_worktree.task_id if self.task_worktree else None
+
+
 class RuntimeService:
     """The only service that touches OS processes and long-lived git state."""
 
@@ -55,33 +69,53 @@ class RuntimeService:
         initial_message: dict,
         env: dict[str, str] | None = None,
     ) -> ExecutionRun:
+        target = RunTarget(cwd=Path(task_worktree.path), task_worktree=task_worktree)
         async with self.session_factory() as db:
-            return await self._start_run(db, agent, task_worktree, allowed_servers, None, initial_message, env)
+            return await self._start_run(db, agent, target, allowed_servers, None, initial_message, env, keep_stdin_open=False)
 
     async def resume(self, agent: Agent, agent_session: AgentSession, task_worktree: TaskWorktree, allowed_servers: list[McpServerRef], prompt_text: str, env: dict[str, str] | None = None) -> ExecutionRun:
-        require_resumable_session(agent, task_worktree, agent_session)
+        require_resumable_session(agent, agent_session, task_worktree)
+        target = RunTarget(cwd=Path(task_worktree.path), task_worktree=task_worktree)
         message = build_follow_up_message(prompt_text)
         async with self.session_factory() as db:
-            return await self._start_run(db, agent, task_worktree, allowed_servers, agent_session, message, env)
+            return await self._start_run(db, agent, target, allowed_servers, agent_session, message, env, keep_stdin_open=False)
 
-    async def _start_run(self, db, agent, task_worktree, allowed_servers, resume_session, initial_message, env) -> ExecutionRun:
-        agent_session, run = await self._open_session_and_run(db, agent, task_worktree, resume_session)
-        internal_servers = self._build_internal_servers(agent, task_worktree, agent_session)
-        mcp_config_path = write_mcp_config(self._agent_runtime_dir(agent.id), allowed_servers, internal_servers)
-        await self._launch_process(db, agent_session, run, task_worktree, mcp_config_path, resume_session, initial_message, env)
+    async def spawn_meeting_turn(self, agent: Agent, meeting: Meeting, cwd: Path, allowed_servers: list[McpServerRef], initial_message: dict, env: dict[str, str] | None = None) -> ExecutionRun:
+        """C5: the first turn for a participant -- a long-lived process (keep_stdin_open) with no task worktree."""
+        target = RunTarget(cwd=cwd, meeting=meeting)
+        async with self.session_factory() as db:
+            return await self._start_run(db, agent, target, allowed_servers, None, initial_message, env, keep_stdin_open=True)
+
+    async def resume_meeting_turn(self, agent: Agent, agent_session: AgentSession, cwd: Path, allowed_servers: list[McpServerRef], prompt_text: str, env: dict[str, str] | None = None) -> ExecutionRun:
+        """C5: re-spawn after a restart terminated the previous long-lived process -- the conversation itself survives via --resume."""
+        require_resumable_session(agent, agent_session, None)
+        target = RunTarget(cwd=cwd)
+        message = build_follow_up_message(prompt_text)
+        async with self.session_factory() as db:
+            return await self._start_run(db, agent, target, allowed_servers, agent_session, message, env, keep_stdin_open=True)
+
+    async def send_message(self, run_id: uuid.UUID, payload: dict) -> None:
+        """C5: a later turn on an already-open, long-lived process -- no new run, just another line on the same stdin."""
+        managed = self._processes.get(run_id)
+        if managed is None:
+            raise RuntimeError(f"run {run_id} has no live process to send to")
+        await managed.send_line(payload)
+
+    async def _start_run(self, db, agent, target: RunTarget, allowed_servers, resume_session, initial_message, env, keep_stdin_open) -> ExecutionRun:
+        agent_session, run = await self._open_session_and_run(db, agent, target, resume_session)
+        internal_servers = self._build_internal_servers(agent, target, agent_session)
+        mcp_config_path = write_mcp_config(self._run_dir(agent.id, run.id), allowed_servers, internal_servers)
+        await self._launch_process(db, agent_session, run, target, mcp_config_path, resume_session, initial_message, env, keep_stdin_open)
         return run
 
-    def _build_internal_servers(self, agent: Agent, task_worktree: TaskWorktree, agent_session: AgentSession) -> dict[str, dict]:
+    def _build_internal_servers(self, agent: Agent, target: RunTarget, agent_session: AgentSession) -> dict[str, dict]:
         """Wires ask_human (19.7) and checkpoint (17.5) in for every run: unlike a catalog server, neither is opt-in."""
         database_url = self.settings.ask_human_database_url or self.settings.database_url
         if not database_url:
             return {}
-        env = {
-            "DATABASE_URL": database_url,
-            "AGENT_ID": str(agent.id),
-            "TASK_ID": str(task_worktree.task_id),
-            "AGENT_SESSION_ID": str(agent_session.id),
-        }
+        env = {"DATABASE_URL": database_url, "AGENT_ID": str(agent.id), "AGENT_SESSION_ID": str(agent_session.id)}
+        if target.task_id is not None:
+            env["TASK_ID"] = str(target.task_id)
         return self._internal_server_entries(env)
 
     def _internal_server_entries(self, env: dict[str, str]) -> dict[str, dict]:
@@ -92,35 +126,40 @@ class RuntimeService:
         }
 
     async def _open_session_and_run(
-        self, db, agent, task_worktree, resume_session: AgentSession | None
+        self, db, agent, target: RunTarget, resume_session: AgentSession | None
     ) -> tuple[AgentSession, ExecutionRun]:
-        before_commit = await worktree.read_head_commit(Path(task_worktree.path))
-        agent_session = resume_session or self._open_agent_session(db, agent, task_worktree)
+        before_commit = await self._read_head_commit(target)
+        agent_session = resume_session or self._open_agent_session(db, agent, target)
         bound_via = BoundVia.RESUME if resume_session else BoundVia.SPAWN
         run = self._open_execution_run(db, agent_session, bound_via, before_commit)
         return agent_session, run
 
-    async def _launch_process(self, db, agent_session, run, task_worktree, mcp_config_path, resume_session, initial_message, env) -> None:
-        managed = await self._spawn_process(agent_session.agent_id, run.id, task_worktree, mcp_config_path, resume_session, env)
+    async def _read_head_commit(self, target: RunTarget) -> str | None:
+        """C4: a meeting has no commit history to read -- HEAD in repo_root would belong to whatever task last landed there, not to this session."""
+        return await worktree.read_head_commit(target.cwd) if target.task_worktree else None
+
+    async def _launch_process(self, db, agent_session, run, target: RunTarget, mcp_config_path, resume_session, initial_message, env, keep_stdin_open) -> None:
+        managed = await self._spawn_process(agent_session.agent_id, run.id, target, mcp_config_path, resume_session, env)
         run.pid = managed.pid
         agent_session.approx_chars += len(str(initial_message))
         await db_commit(db)
         self._processes[run.id] = managed
         await managed.send_line(initial_message)
-        await managed.close_stdin()
+        if not keep_stdin_open:
+            await managed.close_stdin()
 
-    def _agent_runtime_dir(self, agent_id: uuid.UUID) -> Path:
-        return self.settings.runtime_root / str(agent_id)
-
-    def _open_agent_session(self, db, agent, task_worktree) -> AgentSession:
+    def _open_agent_session(self, db, agent, target: RunTarget) -> AgentSession:
         # allow-comment: approx_chars set explicitly, not left to the model's default=0: that's a Python-side ORM default and doesn't populate until this object is flushed, and _launch_process reads it before any flush happens.
         session = AgentSession(
-            id=uuid.uuid4(), agent_id=agent.id, task_worktree_id=task_worktree.id, cwd=task_worktree.path, approx_chars=0
+            id=uuid.uuid4(), agent_id=agent.id,
+            task_worktree_id=target.task_worktree.id if target.task_worktree else None,
+            meeting_id=target.meeting.id if target.meeting else None,
+            cwd=str(target.cwd), approx_chars=0,
         )
         db.add(session)
         return session
 
-    def _open_execution_run(self, db, agent_session: AgentSession, bound_via: BoundVia, before_commit: str) -> ExecutionRun:
+    def _open_execution_run(self, db, agent_session: AgentSession, bound_via: BoundVia, before_commit: str | None) -> ExecutionRun:
         run = ExecutionRun(
             id=uuid.uuid4(),
             agent_session_id=agent_session.id,
@@ -132,23 +171,23 @@ class RuntimeService:
         return run
 
     async def _spawn_process(
-        self, agent_id: uuid.UUID, run_id: uuid.UUID, task_worktree, mcp_config_path: Path, resume_session: AgentSession | None, env: dict[str, str] | None
+        self, agent_id: uuid.UUID, run_id: uuid.UUID, target: RunTarget, mcp_config_path: Path, resume_session: AgentSession | None, env: dict[str, str] | None
     ) -> process.OwnedProcess:
-        command = self._build_command(mcp_config_path, resume_session)
+        command = self._build_command(mcp_config_path, resume_session, target)
         run_directory = self._run_dir(agent_id, run_id)
-        return await process.spawn(command, cwd=Path(task_worktree.path), run_directory=run_directory, env=env)
+        return await process.spawn(command, cwd=target.cwd, run_directory=run_directory, env=env)
 
     def _run_dir(self, agent_id: uuid.UUID, run_id: uuid.UUID) -> Path:
         return process.run_dir(self.settings.runtime_root, agent_id, run_id)
 
-    def _build_command(self, mcp_config_path: Path, resume_session: AgentSession | None) -> list[str]:
-        command = self._base_command_args(mcp_config_path)
+    def _build_command(self, mcp_config_path: Path, resume_session: AgentSession | None, target: RunTarget) -> list[str]:
+        command = self._base_command_args(mcp_config_path, target)
         if resume_session and resume_session.claude_session_id:
             command += ["--resume", resume_session.claude_session_id]
         return command
 
-    def _base_command_args(self, mcp_config_path: Path) -> list[str]:
-        return self._streaming_flags() + self._session_flags(mcp_config_path)
+    def _base_command_args(self, mcp_config_path: Path, target: RunTarget) -> list[str]:
+        return self._streaming_flags() + self._session_flags(mcp_config_path, target)
 
     def _streaming_flags(self) -> list[str]:
         return [
@@ -160,13 +199,17 @@ class RuntimeService:
             "--verbose",
         ]
 
-    def _session_flags(self, mcp_config_path: Path) -> list[str]:
-        return [
+    def _session_flags(self, mcp_config_path: Path, target: RunTarget) -> list[str]:
+        """C5: a meeting turn gets its own permission mode and an explicit tool disallow-list -- --disallowed-tools alone is not a boundary, since _build_internal_servers still injects MCP servers regardless, but it narrows the surface a catalog server's own tools could still reach."""
+        flags = [
             "--model", self.settings.model,
-            "--permission-mode", self.settings.permission_mode,
+            "--permission-mode", "plan" if target.meeting else self.settings.permission_mode,
             "--mcp-config", str(mcp_config_path),
             "--strict-mcp-config",
         ]
+        if target.meeting:
+            flags += ["--disallowed-tools", "Edit,Write,Bash"]
+        return flags
 
     async def stream_events(self, run_id: uuid.UUID) -> AsyncIterator[DomainEvent]:
         """Owns one session for the run's whole life (README 31.1): this is the one worker allowed to write these rows, and it never shares that session with spawn() or another run's stream."""
@@ -178,6 +221,24 @@ class RuntimeService:
                     yield await self._apply_line(db, agent_session, run, line, offset)
             finally:
                 await self._finalize_run(db, managed, agent_session, run)
+
+    async def read_turn_events(self, run_id: uuid.UUID) -> AsyncIterator[DomainEvent]:
+        """C5: reads output for one meeting turn only, stopping at that turn's result event without finalizing the run -- the process stays alive for the next turn, unlike stream_events."""
+        async with self.session_factory() as db:
+            agent_session, run = await self._load_session_and_run(db, run_id)
+            managed = self.resolve_process(agent_session.agent_id, run)
+            async for line, offset in managed.iter_stdout_lines(run.stdout_offset):
+                event = await self._apply_line(db, agent_session, run, line, offset)
+                yield event
+                if event.kind == "run_finished":
+                    return
+
+    async def finalize_meeting_run(self, run_id: uuid.UUID) -> None:
+        """C5: a meeting turn's process is never driven through stream_events, so nothing else ever calls _finalize_run for it -- this is that call, made once the participant's process is actually done (meeting ended, stopped, or terminated for a restart)."""
+        async with self.session_factory() as db:
+            agent_session, run = await self._load_session_and_run(db, run_id)
+            managed = self.resolve_process(agent_session.agent_id, run)
+            await self._finalize_run(db, managed, agent_session, run)
 
     def resolve_process(self, agent_id: uuid.UUID, run: ExecutionRun) -> process.OwnedProcess | process.AdoptedProcess:
         """Phase 0.3: an in-process run still has its live asyncio handle; a run this backend never spawned (adopted after a restart) is reattached from the files its supervisor wrote."""
@@ -223,10 +284,11 @@ class RuntimeService:
         run.exit_code = exit_code
         run.completed_at = utcnow()
         run.status = await self._resolve_final_status(db, run, exit_code, self._result_outcome.pop(run.id, None))
-        run.after_head_commit = await worktree.read_head_commit(Path(agent_session.cwd))
+        if agent_session.task_worktree_id is not None:
+            run.after_head_commit = await worktree.read_head_commit(Path(agent_session.cwd))
         self._processes.pop(run.id, None)
         self._last_progress_flush.pop(run.id, None)
-        remove_mcp_config(self._agent_runtime_dir(agent_session.agent_id))
+        remove_mcp_config(self._run_dir(agent_session.agent_id, run.id))
         await db_commit(db)
 
     async def _resolve_final_status(self, db, run: ExecutionRun, exit_code: int | None, result_outcome: str | None) -> RunStatus:
@@ -255,9 +317,12 @@ class RuntimeService:
             run.kill_requested = True
             await db_commit(db)
 
-def require_resumable_session(agent: Agent, task_worktree: TaskWorktree, agent_session: AgentSession) -> None:
-    if agent_session.agent_id != agent.id or agent_session.task_worktree_id != task_worktree.id:
-        raise ValueError("agent_session does not belong to this agent and task worktree")
+
+def require_resumable_session(agent: Agent, agent_session: AgentSession, task_worktree: TaskWorktree | None) -> None:
+    if agent_session.agent_id != agent.id:
+        raise ValueError("agent_session does not belong to this agent")
+    if task_worktree is not None and agent_session.task_worktree_id != task_worktree.id:
+        raise ValueError("agent_session does not belong to this task worktree")
     if not agent_session.claude_session_id:
         raise ValueError("cannot resume a session with no persisted claude_session_id")
 

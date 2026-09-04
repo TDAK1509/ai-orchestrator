@@ -21,6 +21,7 @@ ATTENTION_RESOLVED = "attention.resolved"
 MEETING_CREATED = "meeting.created"
 MEETING_MESSAGE = "meeting.message"
 MEETING_ENDED = "meeting.ended"
+MEETING_UPDATED = "meeting.updated"
 
 SKILL_CREATED = "skill.created"
 SKILL_UPDATED = "skill.updated"

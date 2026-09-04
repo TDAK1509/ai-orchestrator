@@ -10,11 +10,6 @@ const props = defineProps<{ meeting: Meeting; participantIds: string[] }>()
 const meetings = useMeetingsStore()
 const agents = useAgentsStore()
 const draft = ref("")
-const summaryDraft = ref("")
-const decisionsDraft = ref("")
-const actionItemsDraft = ref("")
-const unresolvedDraft = ref("")
-const speakerId = ref(props.participantIds[0] ?? "")
 
 onMounted(() => {
   if (props.meeting.status === "active") meetings.fetchMessages(props.meeting.id)
@@ -24,51 +19,39 @@ function messages() {
   return meetings.messagesByMeetingId[props.meeting.id] ?? []
 }
 
-function agentName(agentId: string): string {
+function speakerLabel(agentId: string | null): string {
+  if (!agentId) return "Human"
   return agents.byId(agentId)?.name ?? "Unknown"
 }
 
 async function post(): Promise<void> {
-  if (!draft.value || !speakerId.value) return
-  await meetings.addMessage(props.meeting.id, speakerId.value, draft.value)
+  if (!draft.value) return
+  await meetings.addHumanMessage(props.meeting.id, draft.value)
   draft.value = ""
-}
-
-function splitLines(value: string): string[] {
-  return value.split("\n").map((line) => line.trim()).filter(Boolean)
-}
-
-async function end(): Promise<void> {
-  if (!summaryDraft.value) return
-  await meetings.endMeeting(props.meeting.id, {
-    summary: summaryDraft.value,
-    decisions: splitLines(decisionsDraft.value),
-    action_items: splitLines(actionItemsDraft.value),
-    unresolved_questions: splitLines(unresolvedDraft.value),
-  })
 }
 </script>
 
 <template>
   <div class="mt-2 border-t border-gray-100 pt-2">
+    <div v-if="meeting.goal" class="text-xs text-gray-500">Goal: {{ meeting.goal }}</div>
     <div v-if="meeting.status === 'active'">
+      <div class="mt-1 text-xs text-gray-400">
+        Round {{ meeting.current_round + 1 }} of {{ meeting.max_rounds }} · {{ meeting.loop_state }} · next: {{ speakerLabel(meeting.next_speaker_id) }}
+      </div>
       <div v-for="message in messages()" :key="message.id" class="mt-1 text-sm">
-        <span class="font-medium">{{ agentName(message.agent_id) }}</span>
+        <span class="font-medium">{{ speakerLabel(message.agent_id) }}</span>
         <span class="text-gray-600"> {{ message.content }}</span>
       </div>
       <div class="mt-2 flex gap-2">
-        <select v-model="speakerId" class="rounded border border-gray-300 text-xs">
-          <option v-for="id in participantIds" :key="id" :value="id">{{ agentName(id) }}</option>
-        </select>
-        <input v-model="draft" class="flex-1 rounded border border-gray-300 px-2 py-1 text-sm" placeholder="Message..." />
+        <input v-model="draft" class="flex-1 rounded border border-gray-300 px-2 py-1 text-sm" placeholder="Say something to the room..." @keyup.enter="post" />
         <button class="rounded bg-gray-100 px-2 py-1 text-sm" @click="post">Send</button>
       </div>
-      <div class="mt-3 flex flex-col gap-1">
-        <input v-model="summaryDraft" class="rounded border border-gray-300 px-2 py-1 text-sm" placeholder="Summary to end the meeting..." />
-        <textarea v-model="decisionsDraft" class="rounded border border-gray-300 px-2 py-1 text-sm" rows="2" placeholder="Decisions, one per line" />
-        <textarea v-model="actionItemsDraft" class="rounded border border-gray-300 px-2 py-1 text-sm" rows="2" placeholder="Action items, one per line" />
-        <textarea v-model="unresolvedDraft" class="rounded border border-gray-300 px-2 py-1 text-sm" rows="2" placeholder="Unresolved questions, one per line" />
-        <button class="self-start rounded bg-red-600 px-2 py-1 text-sm text-white" @click="end">End Meeting</button>
+      <div class="mt-3 flex flex-wrap gap-2">
+        <button class="rounded bg-blue-600 px-2 py-1 text-sm text-white" @click="meetings.start(meeting.id)">Start</button>
+        <button class="rounded bg-gray-100 px-2 py-1 text-sm" @click="meetings.runRound(meeting.id)">Run one round</button>
+        <button class="rounded bg-gray-100 px-2 py-1 text-sm" @click="meetings.pause(meeting.id)">Pause</button>
+        <button class="rounded bg-gray-100 px-2 py-1 text-sm" @click="meetings.stop(meeting.id)">Stop</button>
+        <button class="rounded bg-red-600 px-2 py-1 text-sm text-white" @click="meetings.summarize(meeting.id)">Finish</button>
       </div>
     </div>
     <div v-else class="text-sm text-gray-600">
