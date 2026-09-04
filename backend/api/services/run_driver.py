@@ -9,6 +9,7 @@ from models.task import Task
 from models.worktree import TaskWorktree
 from runtime.runtime_service import RuntimeService
 from runtime.stream_parser import DomainEvent
+from services.memory_sweep_service import schedule_memory_sweep
 
 # allow-comment: kept separate from task_service (which needs to schedule a resumed run without importing back from session_rotation_service, and vice versa): a leaf module both can depend on, so neither imports the other.
 _BACKGROUND_RUNS: dict[uuid.UUID, asyncio.Task] = {}
@@ -28,6 +29,7 @@ async def drive_run_to_completion(runtime_service, repo_root, agent_id, task_id,
     async with runtime_service.session_factory() as db:
         agent, task, task_worktree, run = await load_run_context(db, agent_id, task_id, task_worktree_id, run_id)
         await finish_run(db, runtime_service, repo_root, agent, task, task_worktree, run, policy)
+    schedule_memory_sweep(runtime_service.session_factory)
 
 
 async def finish_run(db, runtime_service, repo_root, agent, task, task_worktree, run, policy) -> None:

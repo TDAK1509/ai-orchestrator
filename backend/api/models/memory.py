@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -10,6 +11,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    Integer,
     String,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -85,3 +87,29 @@ class MemoryRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     source_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
     last_accessed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # allow-comment: A2.1 -- a portable JSON float array, not a pgvector column, so the aiosqlite dev path keeps working; embedding_model lets a sweep re-embed rows left behind by a retired model instead of silently mixing incomparable vectors.
+    embedding: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
+    embedding_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    embedding_dim: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class MemoryProposalStatus(str, enum.Enum):
+    PENDING = "pending"
+    APPLIED = "applied"
+    DISMISSED = "dismissed"
+
+
+class MemoryProposal(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """A3.1: proposes a supersession, never applies it -- a wrong supersession silently deletes knowledge (README 32.4), so a human clicks."""
+
+    __tablename__ = "memory_proposals"
+
+    old_memory_id: Mapped[uuid.UUID] = mapped_column(GUID(), ForeignKey("memory_records.id"), nullable=False)
+    new_memory_id: Mapped[uuid.UUID] = mapped_column(GUID(), ForeignKey("memory_records.id"), nullable=False)
+    similarity: Mapped[float] = mapped_column(Float, nullable=False)
+
+    status: Mapped[MemoryProposalStatus] = mapped_column(
+        Enum(MemoryProposalStatus, native_enum=False, length=10), default=MemoryProposalStatus.PENDING, nullable=False
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
