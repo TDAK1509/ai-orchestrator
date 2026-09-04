@@ -8,10 +8,11 @@ dependencies = [
   "alembic>=1.13",
   "asyncpg>=0.29",
   "pydantic>=2.7",
-  "mcp>=2.0",
+  "mcp>=2.0,<3",
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
   "websockets>=13",
+  "fastembed>=0.4,<1",
 ]
 
 [project.optional-dependencies]

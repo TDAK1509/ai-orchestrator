@@ -82,6 +82,7 @@ export interface Room {
 }
 
 export type MeetingStatus = "active" | "ended"
+export type MeetingLoopState = "idle" | "running" | "paused"
 
 export interface Meeting {
   id: string
@@ -94,14 +95,23 @@ export interface Meeting {
   decisions: string[]
   action_items: string[]
   unresolved_questions: string[]
+  facilitator_instructions: string | null
+  max_rounds: number
+  chair_agent_id: string | null
+  current_round: number
+  next_speaker_id: string | null
+  loop_state: MeetingLoopState
   created_at: string
 }
+
+export type MeetingAuthor = "human" | "agent" | "legacy_human_as_agent"
 
 export interface MeetingMessage {
   id: string
   meeting_id: string
-  agent_id: string
+  agent_id: string | null
   content: string
+  author: MeetingAuthor
   created_at: string
 }
 
@@ -118,6 +128,15 @@ export interface MemoryRecord {
   importance: number
   pinned: boolean
   status: "active" | "superseded" | "archived"
+  created_at: string
+}
+
+export interface MemoryProposal {
+  id: string
+  old_memory_id: string
+  new_memory_id: string
+  similarity: number
+  status: "pending" | "applied" | "dismissed"
   created_at: string
 }
 

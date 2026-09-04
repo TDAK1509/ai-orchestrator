@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from "vue"
+import { computed, onMounted, ref } from "vue"
 import type { Agent } from "../../api/types"
 import { useActivityStore } from "../../stores/activity"
 import { useAgentsStore } from "../../stores/agents"
 import { useAttentionStore } from "../../stores/attention"
+import { useMemoryStore } from "../../stores/memory"
 import { useTasksStore } from "../../stores/tasks"
 import DecisionPanel from "./DecisionPanel.vue"
 
@@ -14,11 +15,17 @@ const tasks = useTasksStore()
 const agentsStore = useAgentsStore()
 const attention = useAttentionStore()
 const activity = useActivityStore()
+const memory = useMemoryStore()
 const confirmingFire = ref(false)
 
 const currentTask = computed(() => (props.agent.current_task_id ? tasks.byId(props.agent.current_task_id) : undefined))
 const decision = computed(() => attention.decisionForAgent(props.agent.id))
 const recentActivity = computed(() => activity.forAgent(props.agent.id).slice().reverse())
+const agentMemories = computed(() => memory.agentMemoriesByAgentId[props.agent.id] ?? [])
+
+onMounted(() => {
+  memory.fetchAgentMemories(props.agent.id)
+})
 
 async function confirmFire(): Promise<void> {
   await agentsStore.fireAgent(props.agent.id)
@@ -53,6 +60,14 @@ async function confirmFire(): Promise<void> {
           {{ item.toolName ? `Using ${item.toolName}` : item.text || item.kind }}
         </li>
       </ul>
+    </div>
+
+    <div v-if="agentMemories.length" class="mt-4 border-t border-gray-100 pt-4">
+      <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-400">Private Memory</h3>
+      <div v-for="record in agentMemories" :key="record.id" class="mt-2 flex items-start justify-between gap-2 rounded border border-gray-200 p-2 text-sm">
+        <p>{{ record.content }}</p>
+        <button class="shrink-0 text-xs text-blue-600" @click="memory.promote(record.id, agent.id)">Share to workspace</button>
+      </div>
     </div>
 
     <div class="mt-6 border-t border-gray-100 pt-4">

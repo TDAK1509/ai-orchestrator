@@ -9,6 +9,8 @@ const agents = useAgentsStore()
 const meetings = useMeetingsStore()
 const topic = ref("")
 const goal = ref("")
+const facilitatorInstructions = ref("")
+const maxRounds = ref(3)
 const selected = ref<Set<string>>(new Set())
 
 function toggle(agentId: string): void {
@@ -18,7 +20,7 @@ function toggle(agentId: string): void {
 
 async function submit(onDone: () => void): Promise<void> {
   if (!topic.value || selected.value.size === 0) return
-  await meetings.createMeeting(topic.value, goal.value || undefined, [...selected.value])
+  await meetings.createMeeting(topic.value, goal.value || undefined, [...selected.value], facilitatorInstructions.value, maxRounds.value)
   onDone()
 }
 </script>
@@ -39,8 +41,12 @@ async function submit(onDone: () => void): Promise<void> {
           {{ agent.name }} · {{ agent.role }}
         </label>
       </div>
-      <label class="mt-3 block text-sm font-medium">Goal / Instructions</label>
+      <label class="mt-3 block text-sm font-medium">Goal</label>
       <textarea v-model="goal" class="mt-1 w-full rounded border border-gray-300 px-2 py-1" rows="2" />
+      <label class="mt-3 block text-sm font-medium">Facilitator instructions (drives the discussion)</label>
+      <textarea v-model="facilitatorInstructions" class="mt-1 w-full rounded border border-gray-300 px-2 py-1" rows="2" />
+      <label class="mt-3 block text-sm font-medium">Max rounds</label>
+      <input v-model.number="maxRounds" type="number" min="1" class="mt-1 w-20 rounded border border-gray-300 px-2 py-1" />
       <div class="mt-4 flex justify-end gap-2">
         <button class="rounded border border-gray-300 px-3 py-1.5 text-sm" @click="$emit('close')">Cancel</button>
         <button class="rounded bg-blue-600 px-3 py-1.5 text-sm text-white" @click="submit(() => $emit('close'))">Create</button>

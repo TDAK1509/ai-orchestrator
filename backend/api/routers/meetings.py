@@ -1,24 +1,32 @@
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from deps import get_db
-from events.bus import bus
-from events.schema import MEETING_CREATED, MEETING_ENDED, MEETING_MESSAGE
+from deps import get_db, get_policy, get_repo_root, get_runtime_service
 from lookups import get_or_404
 from models.agent import Agent
-from models.meeting import Meeting
+from models.meeting import Meeting, MeetingLoopState
+from runtime.meeting_runtime import (
+    force_close_out,
+    run_single_round,
+    start_meeting_loop,
+    terminate_meeting_processes,
+)
+from runtime.runtime_service import RuntimeService
 from serialization import serialize
 from services.meeting_service import (
-    add_meeting_message,
+    add_human_message,
     create_meeting,
     end_meeting,
     list_meeting_messages,
     list_meetings,
+    set_loop_state,
 )
 from services.room_service import ensure_main_room
+from services.task_service import TaskRuntimePolicy
 
 router = APIRouter(prefix="/meetings", tags=["meetings"])
 
@@ -27,10 +35,12 @@ class CreateMeetingBody(BaseModel):
     topic: str
     goal: str | None = None
     participant_agent_ids: list[uuid.UUID]
+    facilitator_instructions: str | None = None
+    max_rounds: int = Field(default=3, ge=1, le=20)
+    chair_agent_id: uuid.UUID | None = None
 
 
 class AddMeetingMessageBody(BaseModel):
-    agent_id: uuid.UUID
     content: str
 
 
@@ -47,16 +57,20 @@ async def list_meetings_route(db=Depends(get_db)):
 
 
 @router.post("", status_code=201)
-async def create_meeting_route(body: CreateMeetingBody, db=Depends(get_db)):
+async def create_meeting_route(body: CreateMeetingBody, db=Depends(get_db), policy: TaskRuntimePolicy = Depends(get_policy)):
     participants = await load_participants(db, body.participant_agent_ids)
-    meeting = await create_meeting(db, body.topic, body.goal, participants)
-    bus.publish(MEETING_CREATED, serialize(meeting))
+    meeting = await create_meeting(db, body.topic, body.goal, participants, policy, body.facilitator_instructions, body.max_rounds, body.chair_agent_id)
     return serialize(meeting)
 
 
 async def load_participants(db, agent_ids: list[uuid.UUID]) -> list[Agent]:
-    query = select(Agent).where(Agent.id.in_(agent_ids))
-    return list((await db.execute(query)).scalars())
+    """codex P1: an IN query silently drops unknown or duplicate ids -- a client asking for 3 participants must not get a meeting of 2 with no error."""
+    unique_ids = list(dict.fromkeys(agent_ids))
+    query = select(Agent).where(Agent.id.in_(unique_ids))
+    participants = list((await db.execute(query)).scalars())
+    if len(participants) != len(unique_ids):
+        raise ValueError("one or more participant_agent_ids do not exist")
+    return participants
 
 
 @router.get("/{meeting_id}/messages")
@@ -66,22 +80,52 @@ async def list_meeting_messages_route(meeting_id: uuid.UUID, db=Depends(get_db))
 
 @router.post("/{meeting_id}/messages", status_code=201)
 async def add_meeting_message_route(meeting_id: uuid.UUID, body: AddMeetingMessageBody, db=Depends(get_db)):
-    meeting, agent = await load_meeting_and_agent(db, meeting_id, body.agent_id)
-    message = await add_meeting_message(db, meeting, agent, body.content)
-    bus.publish(MEETING_MESSAGE, serialize(message))
+    """C7: a human interjection, not a simulated agent turn -- an agent's own turn comes only from the meeting runtime now."""
+    meeting = await get_or_404(db, Meeting, meeting_id, "meeting")
+    message = await add_human_message(db, meeting, body.content)
     return serialize(message)
 
 
-async def load_meeting_and_agent(db, meeting_id: uuid.UUID, agent_id: uuid.UUID):
+@router.post("/{meeting_id}/start")
+async def start_meeting_route(meeting_id: uuid.UUID, db=Depends(get_db), runtime_service: RuntimeService = Depends(get_runtime_service), repo_root: Path = Depends(get_repo_root), policy: TaskRuntimePolicy = Depends(get_policy)):
     meeting = await get_or_404(db, Meeting, meeting_id, "meeting")
-    agent = await get_or_404(db, Agent, agent_id, "agent")
-    return meeting, agent
+    start_meeting_loop(runtime_service, repo_root, policy, meeting.id)
+    return serialize(meeting)
+
+
+@router.post("/{meeting_id}/run-round")
+async def run_round_route(meeting_id: uuid.UUID, db=Depends(get_db), runtime_service: RuntimeService = Depends(get_runtime_service), repo_root: Path = Depends(get_repo_root), policy: TaskRuntimePolicy = Depends(get_policy)):
+    meeting = await get_or_404(db, Meeting, meeting_id, "meeting")
+    await run_single_round(runtime_service, repo_root, policy, meeting.id)
+    return serialize(await db.get(Meeting, meeting_id))
+
+
+@router.post("/{meeting_id}/pause")
+async def pause_meeting_route(meeting_id: uuid.UUID, db=Depends(get_db)):
+    meeting = await get_or_404(db, Meeting, meeting_id, "meeting")
+    await set_loop_state(db, meeting, MeetingLoopState.PAUSED)
+    return serialize(meeting)
+
+
+@router.post("/{meeting_id}/stop")
+async def stop_meeting_route(meeting_id: uuid.UUID, db=Depends(get_db)):
+    """C5 guard: Stop cancels the loop and sets loop_state = paused -- the same effect as pause, kept as a separate route for a distinct button in the panel."""
+    meeting = await get_or_404(db, Meeting, meeting_id, "meeting")
+    await set_loop_state(db, meeting, MeetingLoopState.PAUSED)
+    return serialize(meeting)
+
+
+@router.post("/{meeting_id}/summarize")
+async def summarize_meeting_route(meeting_id: uuid.UUID, db=Depends(get_db), runtime_service: RuntimeService = Depends(get_runtime_service), repo_root: Path = Depends(get_repo_root), policy: TaskRuntimePolicy = Depends(get_policy)):
+    meeting = await get_or_404(db, Meeting, meeting_id, "meeting")
+    await force_close_out(runtime_service, repo_root, policy, meeting.id)
+    return serialize(await db.get(Meeting, meeting_id))
 
 
 @router.post("/{meeting_id}/end")
-async def end_meeting_route(meeting_id: uuid.UUID, body: EndMeetingBody, db=Depends(get_db)):
+async def end_meeting_route(meeting_id: uuid.UUID, body: EndMeetingBody, db=Depends(get_db), runtime_service: RuntimeService = Depends(get_runtime_service), repo_root: Path = Depends(get_repo_root), policy: TaskRuntimePolicy = Depends(get_policy)):
     meeting = await get_or_404(db, Meeting, meeting_id, "meeting")
     main_room = await ensure_main_room(db)
-    meeting = await end_meeting(db, meeting, main_room, body.summary, body.decisions, body.action_items, body.unresolved_questions)
-    bus.publish(MEETING_ENDED, serialize(meeting))
+    meeting = await end_meeting(db, runtime_service, repo_root, policy, meeting, main_room, body.summary, body.decisions, body.action_items, body.unresolved_questions)
+    await terminate_meeting_processes(runtime_service, meeting.id)
     return serialize(meeting)

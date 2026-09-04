@@ -4,8 +4,19 @@ from .base import Base
 from .checkpoint import AgentCheckpoint
 from .decision import DecisionRequest, DecisionStatus
 from .mcp import AgentMcpPermission
-from .meeting import Meeting, MeetingMessage, MeetingParticipant, MeetingStatus
+from .meeting import (
+    Meeting,
+    MeetingAuthor,
+    MeetingLoopState,
+    MeetingMessage,
+    MeetingParticipant,
+    MeetingStatus,
+    MeetingTurn,
+    MeetingTurnState,
+)
 from .memory import (
+    MemoryProposal,
+    MemoryProposalStatus,
     MemoryRecord,
     MemoryScope,
     MemorySourceType,
@@ -34,9 +45,15 @@ __all__ = [
     "DecisionStatus",
     "ExecutionRun",
     "Meeting",
+    "MeetingAuthor",
+    "MeetingLoopState",
     "MeetingMessage",
     "MeetingParticipant",
     "MeetingStatus",
+    "MeetingTurn",
+    "MeetingTurnState",
+    "MemoryProposal",
+    "MemoryProposalStatus",
     "MemoryRecord",
     "MemoryScope",
     "MemorySourceType",

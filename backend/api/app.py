@@ -20,22 +20,50 @@ from routers import (
     skills,
     tasks,
 )
+from runtime.backend_lock import BackendLock
 from runtime.runtime_service import RuntimeService, RuntimeSettings
+from services.embedding_service import prewarm_embedding_model
+from services.memory_sweep_service import start_memory_sweep, stop_memory_sweep
+from services.run_driver import shutdown_background_runs
 from services.startup_service import reconcile_on_startup
 from services.task_service import TaskRuntimePolicy
+from services.watchdog_service import start_watchdog, stop_watchdog
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     engine = build_engine()
+    initialize_app_state(app, engine)
+    lock = BackendLock(app.state.runtime_service.settings.runtime_root / "backend.lock")
+    lock.acquire()
+    try:
+        await reconcile_and_start_watchdog(app)
+        yield
+        await drain_and_stop(app)
+    finally:
+        lock.release()
+    await engine.dispose()
+
+
+def initialize_app_state(app: FastAPI, engine) -> None:
     app.state.session_factory = build_session_factory(engine)
     app.state.runtime_service = RuntimeService(app.state.session_factory, build_runtime_settings_from_env())
     app.state.repo_root = Path(os.environ.get("AGENT_OFFICE_REPO_ROOT", "."))
     app.state.policy = build_policy_from_env()
+
+
+async def reconcile_and_start_watchdog(app: FastAPI) -> None:
+    await prewarm_embedding_model()
     async with app.state.session_factory() as db:
-        await reconcile_on_startup(db, app.state.runtime_service)
-    yield
-    await engine.dispose()
+        await reconcile_on_startup(db, app.state.runtime_service, app.state.repo_root, app.state.policy)
+    app.state.watchdog_task = start_watchdog(app.state.runtime_service)
+    app.state.memory_sweep_task = start_memory_sweep(app.state.session_factory)
+
+
+async def drain_and_stop(app: FastAPI) -> None:
+    await stop_watchdog(app.state.watchdog_task)
+    await stop_memory_sweep(app.state.memory_sweep_task)
+    await shutdown_background_runs(app.state.runtime_service)
 
 
 def build_policy_from_env() -> TaskRuntimePolicy:

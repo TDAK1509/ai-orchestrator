@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,7 +11,6 @@ from events.bus import bus
 from events.schema import (
     AGENT_STATUS_CHANGED,
     ATTENTION_CREATED,
-    RUNTIME_EVENT,
     TASK_BLOCKED,
     TASK_COMPLETED,
 )
@@ -18,26 +18,38 @@ from models.agent import Agent, AgentStatus
 from models.attention import AttentionEvent, AttentionType
 from models.base import utcnow
 from models.merge import MergeType, PrStatus, TaskMerge
-from models.session import ExecutionRun, RunStatus
+from models.session import AgentSession, ExecutionRun, RunStatus
 from models.task import Task, TaskPriority, TaskStatus
 from models.worktree import TaskWorktree
 from runtime import landing
 from runtime import worktree as worktree_ops
 from runtime.mcp_config import McpServerRef
 from runtime.runtime_service import RuntimeService
-from runtime.stream_parser import DomainEvent
 from serialization import serialize
+from services.checkpoint_service import (
+    extract_memories_on_task_completion,
+    find_latest_unused_checkpoint,
+)
 from services.context_builder import build_initial_message
 from services.mcp_service import (
     default_pool_paths,
     read_mcp_pool,
     resolve_allowed_servers,
 )
+from services.resume_service import (
+    build_resume_prompt,
+    claim_next_resume_attempt,
+    clear_resume_pending,
+    mark_resume_pending,
+)
+from services.run_driver import schedule_run_completion
 from services.scheduler_service import claim_next_queued_agent, claim_slot_or_queue
+from services.session_rotation_service import rotate_session
 from services.worktree_service import ensure_task_worktree
 
+logger = logging.getLogger(__name__)
+
 _DIRECT_MERGE_LOCK = asyncio.Lock()
-_BACKGROUND_RUNS: set[asyncio.Task] = set()
 
 
 @dataclass
@@ -92,62 +104,82 @@ async def resolve_agent_mcp_servers(db, repo_root: Path, agent: Agent) -> list[M
     return await resolve_allowed_servers(db, agent.id, pool)
 
 
-def schedule_run_completion(runtime_service, repo_root, agent_id, task_id, task_worktree_id, run_id, policy) -> None:
-    """One worker owns one process for its whole life (README 31.1): this is that worker, driving the run to a finished task on its own session, never the caller's."""
-    coroutine = drive_run_to_completion(runtime_service, repo_root, agent_id, task_id, task_worktree_id, run_id, policy)
-    background_task = asyncio.create_task(coroutine)
-    _BACKGROUND_RUNS.add(background_task)
-    background_task.add_done_callback(_BACKGROUND_RUNS.discard)
-
-
-async def drive_run_to_completion(runtime_service, repo_root, agent_id, task_id, task_worktree_id, run_id, policy) -> None:
-    async for event in runtime_service.stream_events(run_id):
-        publish_runtime_event(agent_id, task_id, run_id, event)
-    async with runtime_service.session_factory() as db:
-        agent, task, task_worktree, run = await load_run_context(db, agent_id, task_id, task_worktree_id, run_id)
-        await finish_task_run(db, runtime_service, repo_root, agent, task, task_worktree, run, policy)
-
-
-def publish_runtime_event(agent_id, task_id, run_id, event: DomainEvent) -> None:
-    payload = {
-        "agentId": str(agent_id), "taskId": str(task_id), "runId": str(run_id),
-        "kind": event.kind, "text": event.text, "toolName": event.tool_name,
-        "filePath": event.file_path, "exitResult": event.exit_result,
-    }
-    bus.publish(RUNTIME_EVENT, payload)
-
-
-async def load_run_context(db, agent_id, task_id, task_worktree_id, run_id):
-    """The run may have started long before this coroutine resumes (stream_events blocks on the process): reload state fresh instead of trusting stale objects from before the spawn."""
-    agent = await db.get(Agent, agent_id)
-    task = await db.get(Task, task_id)
-    task_worktree = await db.get(TaskWorktree, task_worktree_id)
-    run = await db.get(ExecutionRun, run_id)
-    return agent, task, task_worktree, run
-
-
 async def finish_task_run(db, runtime_service: RuntimeService, repo_root: Path, agent: Agent, task: Task, task_worktree: TaskWorktree, run: ExecutionRun, policy: TaskRuntimePolicy) -> None:
     if run.status == RunStatus.COMPLETED:
         await land_or_block(db, agent, task, task_worktree, repo_root, policy)
+    elif run.status == RunStatus.INTERRUPTED:
+        await handle_interrupted_run(db, runtime_service, repo_root, agent, task, task_worktree, run, policy)
     else:
         await fail_task(db, agent, task, run)
     await promote_next_queued_agent(db, runtime_service, repo_root, policy)
 
 
+async def handle_interrupted_run(db, runtime_service: RuntimeService, repo_root: Path, agent: Agent, task: Task, task_worktree: TaskWorktree, run: ExecutionRun, policy: TaskRuntimePolicy) -> None:
+    """Track B2: the backend went away before this run's outcome was known, so give the same session up to three resume attempts before treating it as a real failure."""
+    agent_session = await db.get(AgentSession, run.agent_session_id)
+    await mark_resume_pending(db, agent_session, await build_resume_prompt(db, agent_session))
+    if not await try_resume_agent_session(db, runtime_service, repo_root, agent, task, task_worktree, agent_session, policy):
+        await clear_resume_pending(db, agent_session)
+        await fail_task(db, agent, task, run)
+
+
+async def try_resume_agent_session(db, runtime_service: RuntimeService, repo_root: Path, agent: Agent, task: Task, task_worktree: TaskWorktree, agent_session: AgentSession, policy: TaskRuntimePolicy) -> bool:
+    """Claim-before-spawn (B2.2), capped at 3 attempts: counting execution runs would miss an attempt that failed before a row ever existed."""
+    if not await claim_next_resume_attempt(db, agent_session.id):
+        return False
+    resumed = await attempt_resume_spawn(db, runtime_service, repo_root, agent, task, task_worktree, agent_session, policy)
+    if resumed:
+        await clear_resume_pending(db, agent_session)
+    return resumed
+
+
+async def attempt_resume_spawn(db, runtime_service: RuntimeService, repo_root: Path, agent: Agent, task: Task, task_worktree: TaskWorktree, agent_session: AgentSession, policy: TaskRuntimePolicy) -> bool:
+    try:
+        if agent_session.claude_session_id:
+            return await resume_with_session_id(db, runtime_service, repo_root, agent, task, task_worktree, agent_session, policy)
+        return await resume_from_checkpoint(db, runtime_service, repo_root, agent, task, task_worktree, agent_session, policy)
+    except Exception:
+        logger.exception("resume attempt failed for agent session %s", agent_session.id)
+        return False
+
+
+async def resume_with_session_id(db, runtime_service: RuntimeService, repo_root: Path, agent: Agent, task: Task, task_worktree: TaskWorktree, agent_session: AgentSession, policy: TaskRuntimePolicy) -> bool:
+    allowed_servers = await resolve_agent_mcp_servers(db, repo_root, agent)
+    run = await runtime_service.resume(agent, agent_session, task_worktree, allowed_servers, agent_session.resume_prompt or "")
+    schedule_run_completion(runtime_service, repo_root, agent.id, task.id, task_worktree.id, run.id, policy)
+    return True
+
+
+async def resume_from_checkpoint(db, runtime_service: RuntimeService, repo_root: Path, agent: Agent, task: Task, task_worktree: TaskWorktree, agent_session: AgentSession, policy: TaskRuntimePolicy) -> bool:
+    """No claude_session_id survived the crash (Phase 0.2's stdin loss, or a crash before system/init): fall back to a fresh session seeded with the newest unused checkpoint, the same pattern session_rotation_service already uses for a deliberate rotation (B2.7)."""
+    checkpoint = await find_latest_unused_checkpoint(db, agent.id, task.id)
+    if checkpoint is None:
+        return False
+    allowed_servers = await resolve_agent_mcp_servers(db, repo_root, agent)
+    await rotate_session(db, runtime_service, repo_root, agent, task, task_worktree, agent_session, checkpoint, allowed_servers, policy)
+    return True
+
+
 async def land_or_block(db, agent: Agent, task: Task, task_worktree: TaskWorktree, repo_root: Path, policy: TaskRuntimePolicy) -> None:
     try:
-        await land_task(db, task, task_worktree, repo_root, policy)
+        await land_task(db, agent, task, task_worktree, repo_root, policy)
     except Exception as error:  # noqa: BLE001 - a landing failure must block the task, not vanish in a background task
         await block_on_landing_failure(db, agent, task, error)
         return
     await release_agent(db, agent)
 
 
-async def land_task(db, task: Task, task_worktree: TaskWorktree, repo_root: Path, policy: TaskRuntimePolicy) -> TaskMerge:
+async def land_task(db, agent: Agent, task: Task, task_worktree: TaskWorktree, repo_root: Path, policy: TaskRuntimePolicy) -> TaskMerge:
     path = Path(task_worktree.path)
-    await worktree_ops.commit_worktree(path, f"{task.title}\n\nAgent Office task {task.id}")
+    landed_sha = await worktree_ops.commit_worktree(path, f"{task.title}\n\nAgent Office task {task.id}")
     if policy.merge_type == MergeType.PR:
         await worktree_ops.push_worktree(path, task_worktree.branch)
+    merge = await record_landed_merge(db, task, task_worktree, repo_root, policy)
+    await extract_completion_memories_safely(db, agent, task, task_worktree.branch, landed_sha)
+    return merge
+
+
+async def record_landed_merge(db, task: Task, task_worktree: TaskWorktree, repo_root: Path, policy: TaskRuntimePolicy) -> TaskMerge:
     merge = await record_merge(task, task_worktree, repo_root, policy)
     db.add(merge)
     task.status = TaskStatus.DONE
@@ -155,6 +187,14 @@ async def land_task(db, task: Task, task_worktree: TaskWorktree, repo_root: Path
     await commit(db)
     bus.publish(TASK_COMPLETED, serialize(task))
     return merge
+
+
+async def extract_completion_memories_safely(db, agent: Agent, task: Task, branch: str, landed_sha: str | None) -> None:
+    """A1.5: a broken extraction must not undo a landing that already succeeded above."""
+    try:
+        await extract_memories_on_task_completion(db, agent.id, task.id, task.title, branch, landed_sha)
+    except Exception:
+        logger.exception("memory extraction failed for task %s", task.id)
 
 
 async def record_merge(task: Task, task_worktree: TaskWorktree, repo_root: Path, policy: TaskRuntimePolicy) -> TaskMerge:

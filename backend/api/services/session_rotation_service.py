@@ -11,7 +11,7 @@ from runtime.process import terminate_pid
 from runtime.runtime_service import RuntimeService
 from services.checkpoint_service import extract_memories_from_checkpoint
 from services.context_builder import build_initial_message
-from services.task_service import schedule_run_completion
+from services.run_driver import schedule_run_completion
 
 
 async def rotate_session(db, runtime_service: RuntimeService, repo_root: Path, agent, task, task_worktree, old_agent_session: AgentSession, checkpoint: AgentCheckpoint, allowed_servers: list[McpServerRef], policy) -> ExecutionRun:

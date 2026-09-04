@@ -37,7 +37,8 @@ async def open_decision(session_factory: async_sessionmaker[AsyncSession], quest
     async with session_factory() as db:
         agent = await db.get(Agent, uuid.UUID(os.environ["AGENT_ID"]))
         task = await load_task(db)
-        decision = await create_decision_request(db, agent, task, question, format_options(options))
+        agent_session_id = uuid.UUID(os.environ["AGENT_SESSION_ID"])
+        decision = await create_decision_request(db, agent, task, question, format_options(options), agent_session_id=agent_session_id)
         return decision.id
 
 
