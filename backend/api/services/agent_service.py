@@ -15,10 +15,10 @@ from services.memory_service import archive_memory, list_agent_memories
 from services.room_service import ensure_main_room
 
 
-async def hire_agent(db: AsyncSession, name: str, role: str, instructions: str = "") -> Agent:
+async def hire_agent(db: AsyncSession, name: str, role: str, instructions: str = "", team_id: uuid.UUID | None = None) -> Agent:
     """Rule 1 (README 23): there is always a Main Room, and every agent starts there."""
     main_room = await ensure_main_room(db)
-    agent = Agent(id=uuid.uuid4(), name=name, role=role, instructions=instructions, room_id=main_room.id)
+    agent = Agent(id=uuid.uuid4(), name=name, role=role, instructions=instructions, room_id=main_room.id, team_id=team_id)
     db.add(agent)
     await commit(db)
     return agent

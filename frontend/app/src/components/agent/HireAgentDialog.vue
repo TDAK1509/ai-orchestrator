@@ -1,14 +1,21 @@
 <script setup lang="ts">
-import { ref } from "vue"
+import { onMounted, ref } from "vue"
 import { useAgentsStore } from "../../stores/agents"
+import { useTeamsStore } from "../../stores/teams"
 
 defineEmits<{ close: [] }>()
 
 const agents = useAgentsStore()
+const teams = useTeamsStore()
 const name = ref("")
 const role = ref("")
 const instructions = ref("")
+const teamId = ref("")
 const submitting = ref(false)
+
+onMounted(() => {
+  teams.fetchTeams()
+})
 
 function canSubmit(): boolean {
   return Boolean(name.value && role.value)
@@ -18,7 +25,7 @@ async function submit(onDone: () => void): Promise<void> {
   if (!canSubmit()) return
   submitting.value = true
   try {
-    await agents.hireAgent(name.value, role.value, instructions.value)
+    await agents.hireAgent(name.value, role.value, instructions.value, teamId.value || null)
     onDone()
   } finally {
     submitting.value = false
@@ -39,6 +46,11 @@ async function submit(onDone: () => void): Promise<void> {
       <input v-model="role" class="mt-1 w-full rounded border border-gray-300 px-2 py-1" />
       <label class="mt-3 block text-sm font-medium">Instructions</label>
       <textarea v-model="instructions" class="mt-1 w-full rounded border border-gray-300 px-2 py-1" rows="3" />
+      <label class="mt-3 block text-sm font-medium">Team</label>
+      <select v-model="teamId" class="mt-1 w-full rounded border border-gray-300 px-2 py-1">
+        <option value="">No team</option>
+        <option v-for="team in teams.teams" :key="team.id" :value="team.id">{{ team.name }}</option>
+      </select>
       <div class="mt-4 flex justify-end gap-2">
         <button class="rounded border border-gray-300 px-3 py-1.5 text-sm" @click="$emit('close')">Cancel</button>
         <button

@@ -8,6 +8,7 @@ from events.bus import bus
 from events.schema import AGENT_CREATED, AGENT_FIRED
 from lookups import get_or_404
 from models.agent import Agent
+from models.team import Team
 from serialization import serialize
 from services.agent_service import (
     edit_agent,
@@ -24,6 +25,7 @@ class HireAgentBody(BaseModel):
     name: str
     role: str
     instructions: str = ""
+    team_id: uuid.UUID | None = None
 
 
 class EditAgentBody(BaseModel):
@@ -39,7 +41,9 @@ async def list_agents_route(db=Depends(get_db)):
 
 @router.post("", status_code=201)
 async def hire_agent_route(body: HireAgentBody, db=Depends(get_db)):
-    agent = await hire_agent(db, body.name, body.role, body.instructions)
+    if body.team_id is not None:
+        await get_or_404(db, Team, body.team_id, "team")
+    agent = await hire_agent(db, body.name, body.role, body.instructions, body.team_id)
     bus.publish(AGENT_CREATED, serialize(agent))
     return serialize(agent)
 

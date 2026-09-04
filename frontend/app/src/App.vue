@@ -12,6 +12,7 @@ import RoomsView from "./views/RoomsView.vue"
 import SkillsView from "./views/SkillsView.vue"
 import McpView from "./views/McpView.vue"
 import MemoryView from "./views/MemoryView.vue"
+import TeamsView from "./views/TeamsView.vue"
 import { startRealtimeDispatch } from "./realtime/dispatch"
 import { useActivityStore } from "./stores/activity"
 import { useAgentsStore } from "./stores/agents"
@@ -22,6 +23,7 @@ import { useMemoryStore } from "./stores/memory"
 import { useRoomsStore } from "./stores/rooms"
 import { useSkillsStore } from "./stores/skills"
 import { useTasksStore } from "./stores/tasks"
+import { useTeamsStore } from "./stores/teams"
 
 const agents = useAgentsStore()
 const tasks = useTasksStore()
@@ -32,6 +34,7 @@ const memory = useMemoryStore()
 const rooms = useRoomsStore()
 const meetings = useMeetingsStore()
 const activity = useActivityStore()
+const teams = useTeamsStore()
 
 const selectedAgent = ref<Agent | null>(null)
 const showCreateTask = ref(false)
@@ -43,6 +46,7 @@ const TABS = [
   { key: "skills", label: "Skills" },
   { key: "mcp", label: "MCP" },
   { key: "memory", label: "Workspace Memory" },
+  { key: "teams", label: "Teams" },
 ]
 
 onMounted(() => {
@@ -61,6 +65,7 @@ async function loadSnapshots(): Promise<void> {
     memory.fetchWorkspaceMemories(),
     rooms.fetchRooms(),
     meetings.fetchMeetings(),
+    teams.fetchTeams(),
   ])
   await Promise.all(meetings.active.map((meeting) => meetings.fetchMessages(meeting.id)))
 }
@@ -84,6 +89,7 @@ function openAttentionEvent(event: AttentionEvent): void {
           <SkillsView v-else-if="activeTab === 'skills'" />
           <McpView v-else-if="activeTab === 'mcp'" />
           <MemoryView v-else-if="activeTab === 'memory'" />
+          <TeamsView v-else-if="activeTab === 'teams'" />
         </div>
       </main>
     </div>

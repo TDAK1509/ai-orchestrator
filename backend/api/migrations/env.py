@@ -23,6 +23,7 @@ from models import (  # noqa: F401
     session,
     skill,
     task,
+    team,
     worktree,
 )
 from models.base import Base

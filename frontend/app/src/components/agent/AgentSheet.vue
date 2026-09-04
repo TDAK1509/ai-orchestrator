@@ -6,6 +6,7 @@ import { useAgentsStore } from "../../stores/agents"
 import { useAttentionStore } from "../../stores/attention"
 import { useMemoryStore } from "../../stores/memory"
 import { useTasksStore } from "../../stores/tasks"
+import { useTeamsStore } from "../../stores/teams"
 import DecisionPanel from "./DecisionPanel.vue"
 
 const props = defineProps<{ agent: Agent }>()
@@ -16,12 +17,14 @@ const agentsStore = useAgentsStore()
 const attention = useAttentionStore()
 const activity = useActivityStore()
 const memory = useMemoryStore()
+const teams = useTeamsStore()
 const confirmingFire = ref(false)
 
 const currentTask = computed(() => (props.agent.current_task_id ? tasks.byId(props.agent.current_task_id) : undefined))
 const decision = computed(() => attention.decisionForAgent(props.agent.id))
 const recentActivity = computed(() => activity.forAgent(props.agent.id).slice().reverse())
 const agentMemories = computed(() => memory.agentMemoriesByAgentId[props.agent.id] ?? [])
+const team = computed(() => (props.agent.team_id ? teams.byId(props.agent.team_id) : undefined))
 
 onMounted(() => {
   memory.fetchAgentMemories(props.agent.id)
@@ -44,6 +47,7 @@ async function confirmFire(): Promise<void> {
     </div>
 
     <p class="mt-2 text-sm font-medium uppercase tracking-wide text-gray-500">{{ agent.status }}</p>
+    <p v-if="team" class="mt-1 text-sm text-gray-500">Team: {{ team.name }}</p>
 
     <DecisionPanel v-if="decision" :decision="decision" class="mt-4" />
 

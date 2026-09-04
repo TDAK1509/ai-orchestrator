@@ -19,6 +19,7 @@ from routers import (
     rooms,
     skills,
     tasks,
+    teams,
 )
 from runtime.backend_lock import BackendLock
 from runtime.runtime_service import RuntimeService, RuntimeSettings
@@ -94,7 +95,7 @@ async def handle_value_error(request: Request, exc: ValueError) -> JSONResponse:
     return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
-for router_module in (agents, tasks, decisions, skills, mcp, memory, rooms, meetings, attention):
+for router_module in (agents, tasks, decisions, skills, mcp, memory, rooms, meetings, attention, teams):
     app.include_router(router_module.router, dependencies=[Depends(require_api_token)])
 
 # allow-comment: events.router's /ws route enforces its own origin+token check (see auth.authorize_websocket) instead of Depends(require_api_token) below, since a failed WebSocket handshake can't be turned into an HTTP 401.

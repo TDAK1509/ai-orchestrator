@@ -20,9 +20,9 @@ CANDIDATE_TOP_K = 30
 SIMILARITY_SCAN_CAP = 500
 
 
-async def create_human_memory(db: AsyncSession, scope: MemoryScope, content: str, type_: MemoryType, agent_id: uuid.UUID | None = None, task_id: uuid.UUID | None = None) -> MemoryRecord:
+async def create_human_memory(db: AsyncSession, scope: MemoryScope, content: str, type_: MemoryType, agent_id: uuid.UUID | None = None, task_id: uuid.UUID | None = None, team_id: uuid.UUID | None = None) -> MemoryRecord:
     """A human memory is never superseded automatically (README 32.2) and always carries maximum importance."""
-    return await create_memory(db, scope, content, type_, agent_id, task_id, importance=1.0, source_type=MemorySourceType.HUMAN)
+    return await create_memory(db, scope, content, type_, agent_id, task_id, importance=1.0, source_type=MemorySourceType.HUMAN, team_id=team_id)
 
 
 async def pin_memory(db: AsyncSession, record: MemoryRecord) -> None:
@@ -46,13 +46,14 @@ async def promote_memory_to_workspace(db: AsyncSession, record: MemoryRecord) ->
         raise ValueError(f"memory {record.id} is not agent-scoped (scope={record.scope.value})")
     record.scope = MemoryScope.WORKSPACE
     record.agent_id = None
+    record.team_id = None
     await commit(db)
     return record
 
 
 async def supersede_memory(db: AsyncSession, old: MemoryRecord, content: str, type_: MemoryType, source_type: MemorySourceType | None = None, source_id: str | None = None) -> MemoryRecord:
     """One commit for both rows (README 32.4): a crash or concurrent read between two separate commits could see the old and new record both active at once."""
-    new_record = build_memory(old.scope, content, type_, old.agent_id, old.task_id, old.importance, False, source_type, source_id)
+    new_record = build_memory(old.scope, content, type_, old.agent_id, old.task_id, old.importance, False, source_type, source_id, team_id=old.team_id)
     db.add(new_record)
     old.status = MemoryStatus.SUPERSEDED
     old.superseded_by = new_record.id
@@ -60,29 +61,43 @@ async def supersede_memory(db: AsyncSession, old: MemoryRecord, content: str, ty
     return new_record
 
 
-async def create_memory(db: AsyncSession, scope: MemoryScope, content: str, type_: MemoryType, agent_id: uuid.UUID | None = None, task_id: uuid.UUID | None = None, importance: float = 0.5, pinned: bool = False, source_type: MemorySourceType | None = None, source_id: str | None = None) -> MemoryRecord:
-    record = build_memory(scope, content, type_, agent_id, task_id, importance, pinned, source_type, source_id)
+async def create_memory(db: AsyncSession, scope: MemoryScope, content: str, type_: MemoryType, agent_id: uuid.UUID | None = None, task_id: uuid.UUID | None = None, importance: float = 0.5, pinned: bool = False, source_type: MemorySourceType | None = None, source_id: str | None = None, team_id: uuid.UUID | None = None) -> MemoryRecord:
+    record = build_memory(scope, content, type_, agent_id, task_id, importance, pinned, source_type, source_id, team_id)
     db.add(record)
     await commit(db)
     return record
 
 
-def build_memory(scope: MemoryScope, content: str, type_: MemoryType, agent_id: uuid.UUID | None, task_id: uuid.UUID | None, importance: float, pinned: bool, source_type: MemorySourceType | None, source_id: str | None) -> MemoryRecord:
-    require_valid_scope(scope, agent_id, task_id)
+def build_memory(scope: MemoryScope, content: str, type_: MemoryType, agent_id: uuid.UUID | None, task_id: uuid.UUID | None, importance: float, pinned: bool, source_type: MemorySourceType | None, source_id: str | None, team_id: uuid.UUID | None = None) -> MemoryRecord:
+    require_valid_scope(scope, agent_id, task_id, team_id)
     return MemoryRecord(
-        id=uuid.uuid4(), scope=scope, agent_id=agent_id, task_id=task_id, type=type_, content=content,
+        id=uuid.uuid4(), scope=scope, agent_id=agent_id, task_id=task_id, team_id=team_id, type=type_, content=content,
         importance=importance, pinned=pinned, source_type=source_type, source_id=source_id,
     )
 
 
-def require_valid_scope(scope: MemoryScope, agent_id: uuid.UUID | None, task_id: uuid.UUID | None) -> None:
-    """A workspace record with an agent_id (or an agent record without one) is a confusing, invalid state (README 32.1): scope and owner must agree."""
-    if scope == MemoryScope.WORKSPACE and agent_id is not None:
-        raise ValueError("a workspace-scoped memory must not have an agent_id")
+def require_valid_scope(scope: MemoryScope, agent_id: uuid.UUID | None, task_id: uuid.UUID | None, team_id: uuid.UUID | None = None) -> None:
+    """Scope and owner must agree, in both directions (README 32.1): the scope's own owner field is present, and no other owner field is set."""
+    require_owner_present(scope, agent_id, task_id, team_id)
+    require_no_extraneous_owner(scope, agent_id, task_id, team_id)
+
+
+def require_owner_present(scope: MemoryScope, agent_id: uuid.UUID | None, task_id: uuid.UUID | None, team_id: uuid.UUID | None) -> None:
     if scope == MemoryScope.AGENT and agent_id is None:
         raise ValueError("an agent-scoped memory requires an agent_id")
+    if scope == MemoryScope.TEAM and team_id is None:
+        raise ValueError("a team-scoped memory requires a team_id")
     if scope == MemoryScope.TASK and task_id is None:
         raise ValueError("a task-scoped memory requires a task_id")
+
+
+def require_no_extraneous_owner(scope: MemoryScope, agent_id: uuid.UUID | None, task_id: uuid.UUID | None, team_id: uuid.UUID | None) -> None:
+    if scope == MemoryScope.WORKSPACE and (agent_id is not None or team_id is not None):
+        raise ValueError("a workspace-scoped memory must not have an agent_id or team_id")
+    if scope == MemoryScope.AGENT and team_id is not None:
+        raise ValueError("an agent-scoped memory must not have a team_id")
+    if scope == MemoryScope.TEAM and (agent_id is not None or task_id is not None):
+        raise ValueError("a team-scoped memory must not have an agent_id or task_id")
 
 
 async def list_workspace_memories(db: AsyncSession, include_archived: bool = False) -> list[MemoryRecord]:
@@ -99,35 +114,44 @@ async def list_agent_memories(db: AsyncSession, agent_id: uuid.UUID, include_arc
     return list((await db.execute(query.order_by(MemoryRecord.created_at.desc()))).scalars())
 
 
-async def retrieve_context_memories(db: AsyncSession, agent_id: uuid.UUID, query_text: str, task_id: uuid.UUID | None = None, limit: int = RETRIEVAL_LIMIT) -> list[MemoryRecord]:
+async def list_team_memories(db: AsyncSession, team_id: uuid.UUID, include_archived: bool = False) -> list[MemoryRecord]:
+    query = select(MemoryRecord).where(MemoryRecord.scope == MemoryScope.TEAM, MemoryRecord.team_id == team_id)
+    if not include_archived:
+        query = query.where(MemoryRecord.status != MemoryStatus.ARCHIVED)
+    return list((await db.execute(query.order_by(MemoryRecord.created_at.desc()))).scalars())
+
+
+async def retrieve_context_memories(db: AsyncSession, agent_id: uuid.UUID, query_text: str, task_id: uuid.UUID | None = None, team_id: uuid.UUID | None = None, limit: int = RETRIEVAL_LIMIT) -> list[MemoryRecord]:
     """Pinned memory has its own budget (README 32.3): always included, never crowded out by whatever scores highest below. A2.4: the candidate set is a union of top-K by recency, importance and vector similarity, not "newest N" -- that would silently drop an old, highly relevant record before it is ever scored."""
-    pinned = await list_pinned_for_agent(db, agent_id, task_id)
+    pinned = await list_pinned_for_agent(db, agent_id, task_id, team_id)
     query_embedding = await embed_text(query_text)
-    candidates = await build_candidate_set(db, agent_id, task_id, query_embedding)
+    candidates = await build_candidate_set(db, agent_id, task_id, team_id, query_embedding)
     ranked = sorted(candidates, key=lambda record: score_memory(record, query_text, query_embedding), reverse=True)
     retrieved = pinned + ranked[:limit]
     await touch_memories(db, retrieved)
     return retrieved
 
 
-async def list_pinned_for_agent(db: AsyncSession, agent_id: uuid.UUID, task_id: uuid.UUID | None = None) -> list[MemoryRecord]:
-    query = select(MemoryRecord).where(MemoryRecord.status == MemoryStatus.ACTIVE, MemoryRecord.pinned.is_(True), in_scope_clause(agent_id, task_id))
+async def list_pinned_for_agent(db: AsyncSession, agent_id: uuid.UUID, task_id: uuid.UUID | None = None, team_id: uuid.UUID | None = None) -> list[MemoryRecord]:
+    query = select(MemoryRecord).where(MemoryRecord.status == MemoryStatus.ACTIVE, MemoryRecord.pinned.is_(True), in_scope_clause(agent_id, task_id, team_id))
     return list((await db.execute(query)).scalars())
 
 
-def in_scope_clause(agent_id: uuid.UUID, task_id: uuid.UUID | None):
-    """A2.4: also true for a MemoryScope.TASK row scoped to this task -- dead before, since nothing accepted a task_id to filter by."""
+def in_scope_clause(agent_id: uuid.UUID, task_id: uuid.UUID | None, team_id: uuid.UUID | None = None):
+    """A2.4: also true for a MemoryScope.TASK row scoped to this task -- dead before, since nothing accepted a task_id to filter by. team_id=None reproduces the pre-team clause exactly, so a teamless agent is unaffected."""
     clauses = [MemoryRecord.scope == MemoryScope.WORKSPACE, and_(MemoryRecord.scope == MemoryScope.AGENT, MemoryRecord.agent_id == agent_id)]
+    if team_id is not None:
+        clauses.append(and_(MemoryRecord.scope == MemoryScope.TEAM, MemoryRecord.team_id == team_id))
     if task_id is not None:
         clauses.append(and_(MemoryRecord.scope == MemoryScope.TASK, MemoryRecord.task_id == task_id))
     return or_(*clauses)
 
 
-async def build_candidate_set(db: AsyncSession, agent_id: uuid.UUID, task_id: uuid.UUID | None, query_embedding: list[float]) -> list[MemoryRecord]:
+async def build_candidate_set(db: AsyncSession, agent_id: uuid.UUID, task_id: uuid.UUID | None, team_id: uuid.UUID | None, query_embedding: list[float]) -> list[MemoryRecord]:
     groups = [
-        await list_unpinned_active_ordered(db, agent_id, task_id, recency_order()),
-        await list_unpinned_active_ordered(db, agent_id, task_id, MemoryRecord.importance.desc()),
-        await list_top_by_similarity(db, agent_id, task_id, query_embedding),
+        await list_unpinned_active_ordered(db, agent_id, task_id, team_id, recency_order()),
+        await list_unpinned_active_ordered(db, agent_id, task_id, team_id, MemoryRecord.importance.desc()),
+        await list_top_by_similarity(db, agent_id, task_id, team_id, query_embedding),
     ]
     return dedupe_by_id(record for group in groups for record in group)
 
@@ -143,21 +167,21 @@ def dedupe_by_id(records) -> list[MemoryRecord]:
     return list(seen.values())
 
 
-async def list_unpinned_active_ordered(db: AsyncSession, agent_id: uuid.UUID, task_id: uuid.UUID | None, order_clause, limit: int = CANDIDATE_TOP_K) -> list[MemoryRecord]:
+async def list_unpinned_active_ordered(db: AsyncSession, agent_id: uuid.UUID, task_id: uuid.UUID | None, team_id: uuid.UUID | None, order_clause, limit: int = CANDIDATE_TOP_K) -> list[MemoryRecord]:
     query = (
         select(MemoryRecord)
-        .where(MemoryRecord.status == MemoryStatus.ACTIVE, MemoryRecord.pinned.is_(False), in_scope_clause(agent_id, task_id))
+        .where(MemoryRecord.status == MemoryStatus.ACTIVE, MemoryRecord.pinned.is_(False), in_scope_clause(agent_id, task_id, team_id))
         .order_by(order_clause)
         .limit(limit)
     )
     return list((await db.execute(query)).scalars())
 
 
-async def list_top_by_similarity(db: AsyncSession, agent_id: uuid.UUID, task_id: uuid.UUID | None, query_embedding: list[float], limit: int = CANDIDATE_TOP_K) -> list[MemoryRecord]:
+async def list_top_by_similarity(db: AsyncSession, agent_id: uuid.UUID, task_id: uuid.UUID | None, team_id: uuid.UUID | None, query_embedding: list[float], limit: int = CANDIDATE_TOP_K) -> list[MemoryRecord]:
     """A2.6: brute-force cosine over embedded candidates, not an ANN index -- one local user's corpus is small enough that this stays fast (A2.6 note); pgvector can come later behind a capability check."""
     query = (
         select(MemoryRecord)
-        .where(MemoryRecord.status == MemoryStatus.ACTIVE, MemoryRecord.pinned.is_(False), MemoryRecord.embedding.isnot(None), in_scope_clause(agent_id, task_id))
+        .where(MemoryRecord.status == MemoryStatus.ACTIVE, MemoryRecord.pinned.is_(False), MemoryRecord.embedding.isnot(None), in_scope_clause(agent_id, task_id, team_id))
         .limit(SIMILARITY_SCAN_CAP)
     )
     embedded = list((await db.execute(query)).scalars())

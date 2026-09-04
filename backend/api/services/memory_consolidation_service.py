@@ -76,7 +76,7 @@ def find_similar_pairs(candidates: list[MemoryRecord]):
 
 
 def same_owner(a: MemoryRecord, b: MemoryRecord) -> bool:
-    return a.scope == b.scope and a.agent_id == b.agent_id and a.task_id == b.task_id
+    return a.scope == b.scope and a.agent_id == b.agent_id and a.task_id == b.task_id and a.team_id == b.team_id
 
 
 def normalize(content: str) -> str:

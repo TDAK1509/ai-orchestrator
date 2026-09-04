@@ -22,6 +22,7 @@ from .base import GUID, Base, TimestampMixin, UUIDPrimaryKeyMixin
 class MemoryScope(str, enum.Enum):
     WORKSPACE = "workspace"
     AGENT = "agent"
+    TEAM = "team"
     TASK = "task"
 
 
@@ -58,16 +59,20 @@ class MemoryRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Index("ix_memory_records_agent_scope", "agent_id", "scope", "status"),
         Index("ix_memory_records_task_scope", "task_id", "scope", "status"),
         Index("ix_memory_records_scope_status", "scope", "status"),
+        Index("ix_memory_records_team_scope", "team_id", "scope", "status"),
+        # allow-comment: compares uppercase enum member NAMES, not .value -- native_enum=False persists 'WORKSPACE', not 'workspace' (verified by round-trip on SQLAlchemy 2.0.52); a lowercase clause is silently vacuous.
         CheckConstraint(
-            "(scope != 'workspace' OR agent_id IS NULL) "
-            "AND (scope != 'agent' OR agent_id IS NOT NULL) "
-            "AND (scope != 'task' OR task_id IS NOT NULL)",
+            "(scope != 'WORKSPACE' OR (agent_id IS NULL AND team_id IS NULL)) "
+            "AND (scope != 'AGENT' OR (agent_id IS NOT NULL AND team_id IS NULL)) "
+            "AND (scope != 'TEAM' OR (team_id IS NOT NULL AND agent_id IS NULL AND task_id IS NULL)) "
+            "AND (scope != 'TASK' OR task_id IS NOT NULL)",
             name="ck_memory_records_scope_owner",
         ),
     )
 
     scope: Mapped[MemoryScope] = mapped_column(Enum(MemoryScope, native_enum=False, length=10), nullable=False)
     agent_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("agents.id"), nullable=True)
+    team_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("teams.id"), nullable=True)
     task_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("tasks.id"), nullable=True)
 
     type: Mapped[MemoryType] = mapped_column(Enum(MemoryType, native_enum=False, length=20), nullable=False)

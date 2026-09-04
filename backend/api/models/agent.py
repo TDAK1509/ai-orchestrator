@@ -33,6 +33,7 @@ class Agent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     # allow-comment: separate from status (README Rule 2): an agent can be WORKING while in a meeting room, never a combined "in_meeting" status.
     room_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("rooms.id"), nullable=True, index=True)
+    team_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("teams.id"), nullable=True, index=True)
 
     # allow-comment: a real FK here would be circular (Task/AgentSession already FK agents.id); service layer enforces it instead.
     current_task_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)
