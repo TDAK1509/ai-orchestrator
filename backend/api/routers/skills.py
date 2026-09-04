@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from deps import get_config_worktree, get_db
+from deps import get_db
 from events.bus import bus
 from events.schema import SKILL_CREATED, SKILL_DELETED, SKILL_UPDATED
 from lookups import get_or_404
@@ -17,8 +17,6 @@ from services.skill_service import (
     edit_skill,
     list_assigned_agents,
     list_skills,
-    read_instructions,
-    skill_dir,
     unassign_skill,
 )
 
@@ -38,29 +36,29 @@ class EditSkillBody(BaseModel):
 
 
 @router.get("")
-async def list_skills_route(db=Depends(get_db), config_worktree=Depends(get_config_worktree)):
-    return [serialize_skill_with_instructions(skill, config_worktree) for skill in await list_skills(db)]
+async def list_skills_route(db=Depends(get_db)):
+    return [serialize(skill) for skill in await list_skills(db)]
 
 
 @router.get("/{skill_id}")
-async def get_skill_route(skill_id: uuid.UUID, db=Depends(get_db), config_worktree=Depends(get_config_worktree)):
+async def get_skill_route(skill_id: uuid.UUID, db=Depends(get_db)):
     skill = await get_or_404(db, Skill, skill_id, "skill")
-    return serialize_skill_with_instructions(skill, config_worktree)
+    return serialize(skill)
 
 
 @router.post("", status_code=201)
-async def create_skill_route(body: CreateSkillBody, db=Depends(get_db), config_worktree=Depends(get_config_worktree)):
-    skill = await create_skill(db, config_worktree, body.name, body.description, body.instructions)
+async def create_skill_route(body: CreateSkillBody, db=Depends(get_db)):
+    skill = await create_skill(db, body.name, body.description, body.instructions)
     bus.publish(SKILL_CREATED, serialize(skill))
-    return serialize_skill_with_instructions(skill, config_worktree)
+    return serialize(skill)
 
 
 @router.patch("/{skill_id}")
-async def edit_skill_route(skill_id: uuid.UUID, body: EditSkillBody, db=Depends(get_db), config_worktree=Depends(get_config_worktree)):
+async def edit_skill_route(skill_id: uuid.UUID, body: EditSkillBody, db=Depends(get_db)):
     skill = await get_or_404(db, Skill, skill_id, "skill")
-    skill = await edit_skill(db, config_worktree, skill, body.name, body.description, body.instructions)
+    skill = await edit_skill(db, skill, body.name, body.description, body.instructions)
     bus.publish(SKILL_UPDATED, serialize(skill))
-    return serialize_skill_with_instructions(skill, config_worktree)
+    return serialize(skill)
 
 
 @router.get("/{skill_id}/agents")
@@ -70,10 +68,10 @@ async def list_skill_agents_route(skill_id: uuid.UUID, db=Depends(get_db)):
 
 
 @router.delete("/{skill_id}")
-async def delete_skill_route(skill_id: uuid.UUID, db=Depends(get_db), config_worktree=Depends(get_config_worktree)):
+async def delete_skill_route(skill_id: uuid.UUID, db=Depends(get_db)):
     skill = await get_or_404(db, Skill, skill_id, "skill")
     payload = serialize(skill)
-    await delete_skill(db, config_worktree, skill)
+    await delete_skill(db, skill)
     bus.publish(SKILL_DELETED, payload)
     return {"deleted": True}
 
@@ -96,7 +94,3 @@ async def load_skill_and_agent(db, skill_id: uuid.UUID, agent_id: uuid.UUID):
     skill = await get_or_404(db, Skill, skill_id, "skill")
     agent = await get_or_404(db, Agent, agent_id, "agent")
     return skill, agent
-
-
-def serialize_skill_with_instructions(skill: Skill, config_worktree) -> dict:
-    return {**serialize(skill), "instructions": read_instructions(skill_dir(config_worktree, skill.slug))}

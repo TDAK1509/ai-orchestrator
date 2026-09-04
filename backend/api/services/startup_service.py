@@ -5,6 +5,7 @@ from sqlalchemy import select
 from db import commit
 from models.agent import Agent
 from runtime.runtime_service import RuntimeService
+from services.global_skill_service import global_skills_dir, sync_global_skills
 from services.recovery_service import recover_running_runs
 from services.room_service import ensure_main_room
 from services.task_service import TaskRuntimePolicy
@@ -13,6 +14,7 @@ from services.task_service import TaskRuntimePolicy
 async def reconcile_on_startup(db, runtime_service: RuntimeService, repo_root: Path, policy: TaskRuntimePolicy) -> None:
     """README 31.5, Track B1/B2: every run this backend doesn't already know the outcome of is reattached, drained, resumed or (only once resume is exhausted) blocked."""
     await backfill_roomless_agents_into_main_room(db)
+    await sync_global_skills(db, global_skills_dir())
     await recover_running_runs(db, runtime_service, repo_root, policy)
 
 

@@ -1005,33 +1005,35 @@ unless the user explicitly chooses permanent deletion.
 
 # 15. Global Skill Catalog
 
-Skills are repository-backed reusable instruction/capability packages.
+Skills are reusable instruction/capability packages. There is one global catalog for the workspace/app. Agents receive references to selected skills from this catalog.
 
-There is one global catalog for the workspace/app repository. Agents receive references to selected skills from this catalog.
+There are two sources of authorship, one table, one read path:
 
-## Suggested repository structure
+- **Global skills** are authored as files in the `ai-orchestrator` repository itself, in a top-level `skills/` directory, and are versioned by normal commits. They are read-only from the web UI.
+- **Custom skills** are created in the web UI and stored entirely in the database. They have no file on disk.
 
-The exact format can evolve, but use a simple repository-owned layout such as:
+## Global skill layout
 
 ```text
-.agent-office/
-  skills/
-    backend-development/
-      SKILL.md
-      metadata.json
+skills/
+  backend-development/
+    SKILL.md
+    metadata.json
 
-    ui-design/
-      SKILL.md
-      metadata.json
+  ui-design/
+    SKILL.md
+    metadata.json
 
-    testing/
-      SKILL.md
-      metadata.json
+  testing/
+    SKILL.md
+    metadata.json
 ```
 
-The repository is the source of truth.
+`metadata.json` is optional: `{"name": "...", "description": "..."}`. When absent, the directory name is used as the name.
 
-The UI should read/write these skill definitions rather than maintaining a separate disconnected copy.
+At backend startup, every subdirectory containing a `SKILL.md` is mirrored into the `skills` database table as a row with `source = "global"`, unless its slug already belongs to a custom skill — that collision is logged and the global skill is skipped, not raised, so a naming clash cannot stop the backend from starting. Editing `SKILL.md` or `metadata.json` needs a backend restart to take effect — nothing reads the filesystem outside that startup sync. A global row whose directory disappears is deleted only if no agent is assigned it; an assigned row keeps serving its last-known instructions.
+
+The web UI can assign a global skill to an agent and inspect its instructions, but cannot edit or delete it.
 
 ## Skills View
 
@@ -1063,6 +1065,8 @@ The UI should read/write these skill definitions rather than maintaining a separ
 
 ## Add / Edit Skill
 
+A custom skill's dialog is fully editable:
+
 ```text
 ┌──────────────────────────────────────────────────────────────┐
 │ Edit Skill                                             [×]  │
@@ -1073,25 +1077,26 @@ The UI should read/write these skill definitions rather than maintaining a separ
 │ Description                                                  │
 │ [ Backend architecture and implementation guidance.       ] │
 │                                                              │
-│ Instructions / SKILL.md                                      │
+│ Instructions                                                 │
 │ ┌──────────────────────────────────────────────────────────┐ │
 │ │ You are responsible for...                               │ │
 │ │                                                          │ │
 │ └──────────────────────────────────────────────────────────┘ │
 │                                                              │
-│ Repository path                                              │
-│ .agent-office/skills/backend-development/                     │
-│                                                              │
 │                                [Delete Skill] [Save Changes] │
 └──────────────────────────────────────────────────────────────┘
 ```
 
+A global skill's dialog is read-only: no Name/Description/Instructions field
+is editable, and there is no Delete Skill button. It shows its repository
+path (`skills/backend-development/`) instead, as a pointer to where it is
+defined.
+
 Users can:
 
-- create skill
-- edit skill
-- delete skill
-- assign/unassign skill to agents
+- create a custom skill
+- edit or delete a custom skill
+- assign/unassign any skill (global or custom) to agents
 - inspect which agents currently use a skill
 
 Deleting a skill that is assigned to agents must show the affected agents before confirmation.
@@ -1105,7 +1110,8 @@ interface Skill {
   name: string
   description?: string
 
-  repositoryPath: string
+  source: "global" | "custom"
+  repositoryPath: string | null
   instructions: string
 
   createdAt: string

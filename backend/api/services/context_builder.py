@@ -4,9 +4,8 @@ from models.agent import Agent
 from models.checkpoint import AgentCheckpoint
 from models.task import Task
 from runtime.mcp_config import McpServerRef
-from services.config_repo_service import ensure_config_worktree
 from services.memory_service import retrieve_context_memories
-from services.skill_service import list_agent_skills, read_instructions, skill_dir
+from services.skill_service import list_agent_skills
 
 
 async def build_initial_message(db, agent: Agent, task: Task, repo_root: Path, allowed_servers: list[McpServerRef], checkpoint: AgentCheckpoint | None = None) -> dict:
@@ -53,12 +52,11 @@ def render_identity(agent: Agent) -> str:
 
 
 async def render_skills(db, agent: Agent, repo_root: Path) -> str:
-    """File contents, not summaries (README 32.3): the assigned skill's actual SKILL.md, read from the catalog worktree."""
+    """File contents, not summaries (README 32.3): the assigned skill's own instructions text, global or custom."""
     skills = await list_agent_skills(db, agent.id)
     if not skills:
         return ""
-    config_worktree = await ensure_config_worktree(repo_root)
-    blocks = (f"## Skill: {skill.name}\n{read_instructions(skill_dir(config_worktree, skill.slug))}" for skill in skills)
+    blocks = (f"## Skill: {skill.name}\n{skill.instructions or ''}" for skill in skills)
     return "\n\n".join(blocks)
 
 

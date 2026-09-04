@@ -1,0 +1,4 @@
+{
+  "name": "clean-code-implementation",
+  "description": "The rules that bind every line of code you write in this codebase - verb function names, functions under the line limit, names instead of comments, and helpers defined below their caller."
+}
