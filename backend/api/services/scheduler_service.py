@@ -4,8 +4,11 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import commit
+from events.bus import bus
+from events.schema import AGENT_STATUS_CHANGED
 from models.agent import Agent, AgentStatus
 from models.base import utcnow
+from serialization import serialize
 
 _SLOT_LOCK = asyncio.Lock()
 
@@ -20,6 +23,7 @@ async def claim_slot_or_queue(db: AsyncSession, agent: Agent, max_concurrent_age
             agent.status = AgentStatus.QUEUED
             agent.queued_at = utcnow()
         await commit(db)
+        bus.publish(AGENT_STATUS_CHANGED, serialize(agent))
         return agent.status == AgentStatus.WORKING
 
 
@@ -33,6 +37,7 @@ async def claim_next_queued_agent(db: AsyncSession, max_concurrent_agents: int) 
         next_agent.status = AgentStatus.WORKING
         next_agent.queued_at = None
         await commit(db)
+        bus.publish(AGENT_STATUS_CHANGED, serialize(next_agent))
         return next_agent
 
 

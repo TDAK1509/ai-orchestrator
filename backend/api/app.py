@@ -2,10 +2,11 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from auth import get_allowed_origins, require_api_token
 from db import build_engine, build_session_factory
 from routers import (
     agents,
@@ -54,7 +55,7 @@ app = FastAPI(title="Agent Office", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.environ.get("AGENT_OFFICE_CORS_ORIGINS", "http://localhost:5173").split(","),
+    allow_origins=get_allowed_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -65,5 +66,8 @@ async def handle_value_error(request: Request, exc: ValueError) -> JSONResponse:
     return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
-for router_module in (agents, tasks, decisions, skills, mcp, memory, rooms, meetings, attention, events):
-    app.include_router(router_module.router)
+for router_module in (agents, tasks, decisions, skills, mcp, memory, rooms, meetings, attention):
+    app.include_router(router_module.router, dependencies=[Depends(require_api_token)])
+
+# allow-comment: events.router's /ws route enforces its own origin+token check (see auth.authorize_websocket) instead of Depends(require_api_token) below, since a failed WebSocket handshake can't be turned into an HTTP 401.
+app.include_router(events.router)

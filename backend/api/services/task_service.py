@@ -7,7 +7,12 @@ from sqlalchemy import select
 
 from db import commit
 from events.bus import bus
-from events.schema import TASK_BLOCKED, TASK_COMPLETED
+from events.schema import (
+    AGENT_STATUS_CHANGED,
+    RUNTIME_EVENT,
+    TASK_BLOCKED,
+    TASK_COMPLETED,
+)
 from models.agent import Agent, AgentStatus
 from models.attention import AttentionEvent, AttentionType
 from models.base import utcnow
@@ -19,6 +24,7 @@ from runtime import landing
 from runtime import worktree as worktree_ops
 from runtime.mcp_config import McpServerRef
 from runtime.runtime_service import RuntimeService
+from runtime.stream_parser import DomainEvent
 from serialization import serialize
 from services.context_builder import build_initial_message
 from services.mcp_service import (
@@ -51,6 +57,7 @@ async def create_task(
 
 
 async def assign_task(db, runtime_service: RuntimeService, repo_root: Path, task: Task, agent: Agent, policy: TaskRuntimePolicy) -> Task:
+    require_assignable(task, agent)
     task.assignee_id = agent.id
     task.status = TaskStatus.IN_PROGRESS
     task.started_at = utcnow()
@@ -58,6 +65,16 @@ async def assign_task(db, runtime_service: RuntimeService, repo_root: Path, task
     if await claim_slot_or_queue(db, agent, policy.max_concurrent_agents):
         await start_agent_on_task(db, runtime_service, repo_root, agent, task, policy)
     return task
+
+
+def require_assignable(task: Task, agent: Agent) -> None:
+    """A repeat assignment must not spawn a second runtime for the same worktree (README Rule 5: one primary task per agent), and a slot-count that only ever counts distinct WORKING agents can't catch that on its own."""
+    if task.status != TaskStatus.BACKLOG:
+        raise ValueError(f"task {task.id} is not assignable (status={task.status.value})")
+    if not agent.active:
+        raise ValueError(f"agent {agent.id} is not active")
+    if agent.status != AgentStatus.IDLE:
+        raise ValueError(f"agent {agent.id} is not idle (status={agent.status.value})")
 
 
 async def start_agent_on_task(db, runtime_service: RuntimeService, repo_root: Path, agent: Agent, task: Task, policy: TaskRuntimePolicy) -> None:
@@ -83,11 +100,20 @@ def schedule_run_completion(runtime_service, repo_root, agent_id, task_id, task_
 
 
 async def drive_run_to_completion(runtime_service, repo_root, agent_id, task_id, task_worktree_id, run_id, policy) -> None:
-    async for _event in runtime_service.stream_events(run_id):
-        pass
+    async for event in runtime_service.stream_events(run_id):
+        publish_runtime_event(agent_id, task_id, run_id, event)
     async with runtime_service.session_factory() as db:
         agent, task, task_worktree, run = await load_run_context(db, agent_id, task_id, task_worktree_id, run_id)
         await finish_task_run(db, runtime_service, repo_root, agent, task, task_worktree, run, policy)
+
+
+def publish_runtime_event(agent_id, task_id, run_id, event: DomainEvent) -> None:
+    payload = {
+        "agentId": str(agent_id), "taskId": str(task_id), "runId": str(run_id),
+        "kind": event.kind, "text": event.text, "toolName": event.tool_name,
+        "filePath": event.file_path, "exitResult": event.exit_result,
+    }
+    bus.publish(RUNTIME_EVENT, payload)
 
 
 async def load_run_context(db, agent_id, task_id, task_worktree_id, run_id):
@@ -170,6 +196,7 @@ async def block_task(db, agent: Agent, task: Task, title: str, message: str) -> 
     db.add(event)
     await commit(db)
     bus.publish(TASK_BLOCKED, serialize(task))
+    bus.publish(AGENT_STATUS_CHANGED, serialize(agent))
     return event
 
 
@@ -177,6 +204,7 @@ async def release_agent(db, agent: Agent) -> None:
     agent.status = AgentStatus.IDLE
     agent.current_task_id = None
     await commit(db)
+    bus.publish(AGENT_STATUS_CHANGED, serialize(agent))
 
 
 async def promote_next_queued_agent(db, runtime_service: RuntimeService, repo_root: Path, policy: TaskRuntimePolicy) -> Agent | None:

@@ -16,6 +16,8 @@ from services.skill_service import (
     delete_skill,
     edit_skill,
     list_skills,
+    read_instructions,
+    skill_dir,
     unassign_skill,
 )
 
@@ -35,15 +37,21 @@ class EditSkillBody(BaseModel):
 
 
 @router.get("")
-async def list_skills_route(db=Depends(get_db)):
-    return [serialize(skill) for skill in await list_skills(db)]
+async def list_skills_route(db=Depends(get_db), config_worktree=Depends(get_config_worktree)):
+    return [serialize_skill_with_instructions(skill, config_worktree) for skill in await list_skills(db)]
+
+
+@router.get("/{skill_id}")
+async def get_skill_route(skill_id: uuid.UUID, db=Depends(get_db), config_worktree=Depends(get_config_worktree)):
+    skill = await get_or_404(db, Skill, skill_id, "skill")
+    return serialize_skill_with_instructions(skill, config_worktree)
 
 
 @router.post("", status_code=201)
 async def create_skill_route(body: CreateSkillBody, db=Depends(get_db), config_worktree=Depends(get_config_worktree)):
     skill = await create_skill(db, config_worktree, body.name, body.description, body.instructions)
     bus.publish(SKILL_CREATED, serialize(skill))
-    return serialize(skill)
+    return serialize_skill_with_instructions(skill, config_worktree)
 
 
 @router.patch("/{skill_id}")
@@ -51,7 +59,7 @@ async def edit_skill_route(skill_id: uuid.UUID, body: EditSkillBody, db=Depends(
     skill = await get_or_404(db, Skill, skill_id, "skill")
     skill = await edit_skill(db, config_worktree, skill, body.name, body.description, body.instructions)
     bus.publish(SKILL_UPDATED, serialize(skill))
-    return serialize(skill)
+    return serialize_skill_with_instructions(skill, config_worktree)
 
 
 @router.delete("/{skill_id}")
@@ -81,3 +89,7 @@ async def load_skill_and_agent(db, skill_id: uuid.UUID, agent_id: uuid.UUID):
     skill = await get_or_404(db, Skill, skill_id, "skill")
     agent = await get_or_404(db, Agent, agent_id, "agent")
     return skill, agent
+
+
+def serialize_skill_with_instructions(skill: Skill, config_worktree) -> dict:
+    return {**serialize(skill), "instructions": read_instructions(skill_dir(config_worktree, skill.slug))}

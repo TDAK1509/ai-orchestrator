@@ -2,11 +2,14 @@
 
 AGENT_CREATED = "agent.created"
 AGENT_FIRED = "agent.fired"
+AGENT_STATUS_CHANGED = "agent.status_changed"
 
 TASK_CREATED = "task.created"
 TASK_ASSIGNED = "task.assigned"
 TASK_BLOCKED = "task.blocked"
 TASK_COMPLETED = "task.completed"
+
+RUNTIME_EVENT = "runtime.event"
 
 DECISION_CREATED = "decision.created"
 DECISION_ANSWERED = "decision.answered"
