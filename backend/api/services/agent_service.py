@@ -4,10 +4,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import commit
+from events.bus import bus
+from events.schema import TASK_UPDATED
 from models.agent import Agent, AgentStatus
 from models.session import AgentSession, ExecutionRun, RunStatus
 from models.task import Task, TaskStatus
 from runtime.runtime_service import RuntimeService
+from serialization import serialize
 from services.memory_service import archive_memory, list_agent_memories
 from services.room_service import ensure_main_room
 
@@ -41,12 +44,14 @@ def apply_agent_edits(agent: Agent, name: str | None, role: str | None, instruct
 async def fire_agent(db: AsyncSession, runtime_service: RuntimeService, agent: Agent) -> Agent:
     """Archives, never deletes: the task's worktree/branch/history, and the agent's own private memory (README 17.2), outlive the firing."""
     await stop_active_runtime(db, runtime_service, agent)
-    await release_unfinished_task(db, agent)
+    released_task = await release_unfinished_task(db, agent)
     await archive_private_memory(db, agent)
     agent.active = False
     agent.status = AgentStatus.IDLE
     agent.room_id = None
     await commit(db)
+    if released_task is not None:
+        bus.publish(TASK_UPDATED, serialize(released_task))
     return agent
 
 
@@ -71,14 +76,16 @@ async def find_running_run_for_agent(db: AsyncSession, agent: Agent) -> Executio
     return result.scalars().first()
 
 
-async def release_unfinished_task(db: AsyncSession, agent: Agent) -> None:
+async def release_unfinished_task(db: AsyncSession, agent: Agent) -> Task | None:
     if agent.current_task_id is None:
-        return
+        return None
     task = await db.get(Task, agent.current_task_id)
-    if task is not None and task.status != TaskStatus.DONE:
+    released = task is not None and task.status != TaskStatus.DONE
+    if released:
         task.status = TaskStatus.BACKLOG
         task.assignee_id = None
     agent.current_task_id = None
+    return task if released else None
 
 
 async def restore_agent(db: AsyncSession, agent: Agent) -> Agent:

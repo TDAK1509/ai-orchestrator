@@ -11,12 +11,15 @@ async def require_api_token(authorization: str | None = Header(default=None)) ->
 
 
 async def authorize_websocket(websocket: WebSocket) -> bool:
-    """No HTTP response is possible once a WebSocket handshake starts, so the caller must close the socket itself on a False return rather than relying on an exception."""
+    """No HTTP response is possible once a WebSocket handshake starts, so the caller must close the socket itself on a False return rather than relying on an exception. A browser's WebSocket API cannot set an Authorization header, so a ?token= query param is accepted too."""
     origin = websocket.headers.get("origin")
     if origin is not None and origin not in get_allowed_origins():
         return False
     token = get_required_token()
-    return token is None or websocket.headers.get("authorization") == f"Bearer {token}"
+    if token is None:
+        return True
+    presented = websocket.headers.get("authorization") or f"Bearer {websocket.query_params.get('token', '')}"
+    return presented == f"Bearer {token}"
 
 
 def get_allowed_origins() -> list[str]:

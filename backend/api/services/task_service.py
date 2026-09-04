@@ -9,6 +9,7 @@ from db import commit
 from events.bus import bus
 from events.schema import (
     AGENT_STATUS_CHANGED,
+    ATTENTION_CREATED,
     RUNTIME_EVENT,
     TASK_BLOCKED,
     TASK_COMPLETED,
@@ -197,6 +198,7 @@ async def block_task(db, agent: Agent, task: Task, title: str, message: str) -> 
     await commit(db)
     bus.publish(TASK_BLOCKED, serialize(task))
     bus.publish(AGENT_STATUS_CHANGED, serialize(agent))
+    bus.publish(ATTENTION_CREATED, serialize(event))
     return event
 
 
