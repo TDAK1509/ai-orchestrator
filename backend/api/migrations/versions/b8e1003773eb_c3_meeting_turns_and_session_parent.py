@@ -45,7 +45,7 @@ def upgrade() -> None:
         batch_op.create_check_constraint('ck_agent_sessions_exactly_one_parent', '(task_worktree_id IS NULL) != (meeting_id IS NULL)')
 
     with op.batch_alter_table('meeting_messages') as batch_op:
-        batch_op.add_column(sa.Column('author', sa.Enum('HUMAN', 'AGENT', 'LEGACY_HUMAN_AS_AGENT', name='meetingauthor', native_enum=False, length=30), server_default=sa.text("'legacy_human_as_agent'"), nullable=False))
+        batch_op.add_column(sa.Column('author', sa.Enum('HUMAN', 'AGENT', 'LEGACY_HUMAN_AS_AGENT', name='meetingauthor', native_enum=False, length=30), server_default=sa.text("'LEGACY_HUMAN_AS_AGENT'"), nullable=False))
         batch_op.alter_column('agent_id', existing_type=sa.CHAR(length=36), nullable=True)
 
     with op.batch_alter_table('meeting_participants') as batch_op:
@@ -57,7 +57,7 @@ def upgrade() -> None:
         batch_op.add_column(sa.Column('chair_agent_id', models.base.GUID(), nullable=True))
         batch_op.add_column(sa.Column('current_round', sa.Integer(), server_default=sa.text('0'), nullable=False))
         batch_op.add_column(sa.Column('next_speaker_id', models.base.GUID(), nullable=True))
-        batch_op.add_column(sa.Column('loop_state', sa.Enum('IDLE', 'RUNNING', 'PAUSED', name='meetingloopstate', native_enum=False, length=10), server_default=sa.text("'idle'"), nullable=False))
+        batch_op.add_column(sa.Column('loop_state', sa.Enum('IDLE', 'RUNNING', 'PAUSED', name='meetingloopstate', native_enum=False, length=10), server_default=sa.text("'IDLE'"), nullable=False))
         batch_op.create_foreign_key('fk_meetings_chair_agent_id_agents', 'agents', ['chair_agent_id'], ['id'])
         batch_op.create_foreign_key('fk_meetings_next_speaker_id_agents', 'agents', ['next_speaker_id'], ['id'])
     # ### end Alembic commands ###

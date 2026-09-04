@@ -57,7 +57,8 @@ class Meeting(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     current_round: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"), nullable=False)
     next_speaker_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("agents.id"), nullable=True)
     loop_state: Mapped[MeetingLoopState] = mapped_column(
-        Enum(MeetingLoopState, native_enum=False, length=10), default=MeetingLoopState.IDLE, server_default=text("'idle'"), nullable=False
+        # allow-comment: native_enum=False with a Python str-enum class stores the member NAME ("IDLE"), not .value ("idle") -- a lowercase server_default is a row the ORM can't read back.
+        Enum(MeetingLoopState, native_enum=False, length=10), default=MeetingLoopState.IDLE, server_default=text("'IDLE'"), nullable=False
     )
 
 
@@ -77,7 +78,7 @@ class MeetingMessage(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     author: Mapped[MeetingAuthor] = mapped_column(
         Enum(MeetingAuthor, native_enum=False, length=30),
         default=MeetingAuthor.LEGACY_HUMAN_AS_AGENT,
-        server_default=text("'legacy_human_as_agent'"),
+        server_default=text("'LEGACY_HUMAN_AS_AGENT'"),
         nullable=False,
     )
 

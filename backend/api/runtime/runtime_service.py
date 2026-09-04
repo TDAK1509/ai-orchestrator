@@ -22,7 +22,6 @@ from .mcp_config import McpServerRef, remove_mcp_config, write_mcp_config
 from .prompt import build_follow_up_message
 from .stream_parser import DomainEvent, parse_stream_line
 
-TERMINAL_RUN_STATUSES = (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.KILLED, RunStatus.INTERRUPTED)
 PROGRESS_FLUSH_SECONDS = 10.0
 
 
@@ -60,6 +59,7 @@ class RuntimeService:
         self._processes: dict[uuid.UUID, process.OwnedProcess] = {}
         self._last_progress_flush: dict[uuid.UUID, float] = {}
         self._result_outcome: dict[uuid.UUID, str | None] = {}
+        self._detached: set[uuid.UUID] = set()
 
     async def spawn(
         self,
@@ -220,7 +220,17 @@ class RuntimeService:
                 async for line, offset in managed.iter_stdout_lines(run.stdout_offset):
                     yield await self._apply_line(db, agent_session, run, line, offset)
             finally:
-                await self._finalize_run(db, managed, agent_session, run)
+                await self._finalize_unless_detached(db, managed, agent_session, run)
+
+    async def _finalize_unless_detached(self, db, managed, agent_session, run: ExecutionRun) -> None:
+        if run.id in self._detached:
+            self._detached.discard(run.id)
+        else:
+            await self._finalize_run(db, managed, agent_session, run)
+
+    def detach(self, run_id: uuid.UUID) -> None:
+        """Phase 0.6: a graceful shutdown must not fail every in-flight task by killing its process -- detaching skips stream_events' finalize (and the terminate() inside it) entirely, leaving the supervisor and its child running so B1 can reattach them next startup, exactly as it does after a crash."""
+        self._detached.add(run_id)
 
     async def read_turn_events(self, run_id: uuid.UUID) -> AsyncIterator[DomainEvent]:
         """C5: reads output for one meeting turn only, stopping at that turn's result event without finalizing the run -- the process stays alive for the next turn, unlike stream_events."""

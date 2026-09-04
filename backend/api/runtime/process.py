@@ -76,8 +76,8 @@ class AdoptedProcess:
     async def iter_stdout_lines(self, from_offset: int = 0) -> AsyncIterator[tuple[str, int]]:
         offset = from_offset
         while True:
-            new_lines, offset = read_new_lines(self.run_directory / "stdout.jsonl", offset)
-            for line in new_lines:
+            new_lines = read_new_lines(self.run_directory / "stdout.jsonl", offset)
+            for line, offset in new_lines:
                 yield line, offset
             if new_lines:
                 continue
@@ -140,10 +140,10 @@ def read_stderr_tail(run_directory: Path, max_lines: int = STDERR_TAIL_SIZE) -> 
     return lines[-max_lines:]
 
 
-def read_new_lines(path: Path, offset: int) -> tuple[list[str], int]:
+def read_new_lines(path: Path, offset: int) -> list[tuple[str, int]]:
     chunk = read_bytes_from(path, offset)
     if chunk is None:
-        return [], offset
+        return []
     return parse_complete_lines(chunk, offset)
 
 
@@ -156,15 +156,15 @@ def read_bytes_from(path: Path, offset: int) -> bytes | None:
         return None
 
 
-def parse_complete_lines(chunk: bytes, offset: int) -> tuple[list[str], int]:
-    """Only complete lines advance the offset: a partial trailing line means the writer is mid-flush, and yielding it would hand a caller a line it must not treat as a real event."""
+def parse_complete_lines(chunk: bytes, offset: int) -> list[tuple[str, int]]:
+    """Only complete lines advance the offset, and each line carries its own resulting offset (not the batch's final one) -- a caller that persists after the first yielded line must not claim later, unprocessed lines as already applied."""
     lines = []
     for raw_line in chunk.splitlines(keepends=True):
         if not raw_line.endswith(b"\n"):
             break
         offset += len(raw_line)
-        lines.append(raw_line.decode(errors="replace"))
-    return lines, offset
+        lines.append((raw_line.decode(errors="replace"), offset))
+    return lines
 
 
 async def spawn(command: list[str], cwd: Path, run_directory: Path, env: dict[str, str] | None = None) -> OwnedProcess:

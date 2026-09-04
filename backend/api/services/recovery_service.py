@@ -1,6 +1,6 @@
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from models.agent import Agent, AgentStatus
 from models.session import AgentSession, ExecutionRun, RunStatus
@@ -103,14 +103,25 @@ async def reattach_live_run(db, runtime_service, repo_root, agent_session: Agent
 
 
 async def sweep_dangling_agents(db, runtime_service, repo_root, policy) -> None:
-    """B1: an agent/task pair whose last run already finished, but whose backend died before finish_task_run recorded the outcome, is stuck with no RUNNING row for the loop above to find at all."""
+    """B1: an agent/task pair whose last run already finished, but whose backend died before finish_task_run recorded the outcome, is stuck with no RUNNING row for the loop above to find at all. Excludes any agent the loop above already reattached or drained -- that agent's current run may still be genuinely in flight, and its *older* terminal runs must never be re-finished (codex P0: this used to pick the wrong run and could land the wrong worktree)."""
     for agent in await find_dangling_working_agents(db):
         await sweep_one_agent_safely(db, runtime_service, repo_root, agent, policy)
 
 
 async def find_dangling_working_agents(db) -> list[Agent]:
     query = select(Agent).where(Agent.status.in_((AgentStatus.WORKING, AgentStatus.BLOCKED)), Agent.current_task_id.isnot(None))
-    return list((await db.execute(query)).scalars())
+    candidates = list((await db.execute(query)).scalars())
+    return [agent for agent in candidates if not await has_running_run(db, agent.id)]
+
+
+async def has_running_run(db, agent_id) -> bool:
+    query = (
+        select(func.count())
+        .select_from(ExecutionRun)
+        .join(AgentSession, ExecutionRun.agent_session_id == AgentSession.id)
+        .where(AgentSession.agent_id == agent_id, ExecutionRun.status == RunStatus.RUNNING)
+    )
+    return (await db.execute(query)).scalar_one() > 0
 
 
 async def sweep_one_agent_safely(db, runtime_service, repo_root, agent: Agent, policy) -> None:
@@ -124,18 +135,20 @@ async def sweep_one_agent(db, runtime_service, repo_root, agent: Agent, policy) 
     task = await db.get(Task, agent.current_task_id)
     if task is None or task.status != TaskStatus.IN_PROGRESS:
         return
-    run = await find_latest_terminal_run_for_agent(db, agent.id)
+    run = await find_latest_terminal_run_for_task(db, agent.id, task.id)
     if run is None:
         return
     task_worktree = await db.get(TaskWorktree, (await db.get(AgentSession, run.agent_session_id)).task_worktree_id)
     await finish_run(db, runtime_service, repo_root, agent, task, task_worktree, run, policy)
 
 
-async def find_latest_terminal_run_for_agent(db, agent_id) -> ExecutionRun | None:
+async def find_latest_terminal_run_for_task(db, agent_id, task_id) -> ExecutionRun | None:
+    """Scoped to the agent's *current* task, not just its most recent run of any kind -- an agent's last-completed run could otherwise belong to an unrelated, already-landed task."""
     query = (
         select(ExecutionRun)
         .join(AgentSession, ExecutionRun.agent_session_id == AgentSession.id)
-        .where(AgentSession.agent_id == agent_id, ExecutionRun.status != RunStatus.RUNNING)
+        .join(TaskWorktree, AgentSession.task_worktree_id == TaskWorktree.id)
+        .where(AgentSession.agent_id == agent_id, TaskWorktree.task_id == task_id, ExecutionRun.status != RunStatus.RUNNING)
         .order_by(ExecutionRun.completed_at.desc())
         .limit(1)
     )
@@ -164,6 +177,6 @@ async def resume_one_session(db, runtime_service, repo_root, agent_session: Agen
     if task is None:
         return
     task_worktree = await db.get(TaskWorktree, agent_session.task_worktree_id)
-    run = await find_latest_terminal_run_for_agent(db, agent.id)
+    run = await find_latest_terminal_run_for_task(db, agent.id, task.id)
     if not await try_resume_agent_session(db, runtime_service, repo_root, agent, task, task_worktree, agent_session, policy) and run is not None:
         await fail_task(db, agent, task, run)

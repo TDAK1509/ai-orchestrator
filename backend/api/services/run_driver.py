@@ -58,16 +58,17 @@ async def load_run_context(db, agent_id, task_id, task_worktree_id, run_id):
 
 
 async def shutdown_background_runs(runtime_service: RuntimeService) -> None:
-    """A background run's own coroutine finishes on its own once kill_run stops its process (a normal stream EOF, not a cancellation): cancelling stream_events mid-line would instead need a bug-prone GeneratorExit path through an async generator."""
+    """codex P1: a graceful restart must not fail every in-flight task by killing its process. Detach first, then cancel -- detaching makes stream_events' finally skip _finalize_run (and the terminate() inside it) entirely, so the supervisor and its child keep running for B1 to reattach on the next startup, exactly as after a crash."""
     tasks = dict(_BACKGROUND_RUNS)
     for run_id in tasks:
-        await runtime_service.kill_run(run_id)
-    await _await_or_cancel(tasks)
+        runtime_service.detach(run_id)
+    for task in tasks.values():
+        task.cancel()
+    await _await_cancelled(tasks)
 
 
-async def _await_or_cancel(tasks: dict[uuid.UUID, asyncio.Task], timeout_seconds: float = 15.0) -> None:
+async def _await_cancelled(tasks: dict[uuid.UUID, asyncio.Task], timeout_seconds: float = 15.0) -> None:
     try:
         await asyncio.wait_for(asyncio.gather(*tasks.values(), return_exceptions=True), timeout=timeout_seconds)
     except TimeoutError:
-        for task in tasks.values():
-            task.cancel()
+        pass
