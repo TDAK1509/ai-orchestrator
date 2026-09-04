@@ -6,26 +6,20 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from sqlalchemy import select
-
 from db import build_engine, build_session_factory
 from models.agent import Agent
-from models.decision import DecisionRequest, DecisionStatus
+from models.decision import DecisionRequest
 from models.task import Task
+from services.decision_service import list_pending_decisions
 
 
 async def main() -> None:
     engine = build_engine()
     session_factory = build_session_factory(engine)
     async with session_factory() as db:
-        for decision in await load_pending(db):
+        for decision in await list_pending_decisions(db):
             await print_decision(db, decision)
     await engine.dispose()
-
-
-async def load_pending(db) -> list[DecisionRequest]:
-    query = select(DecisionRequest).where(DecisionRequest.status == DecisionStatus.PENDING).order_by(DecisionRequest.created_at)
-    return list((await db.execute(query)).scalars())
 
 
 async def print_decision(db, decision: DecisionRequest) -> None:

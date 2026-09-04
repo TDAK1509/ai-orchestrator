@@ -4,11 +4,19 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import commit
+from events.bus import bus
+from events.schema import (
+    AGENT_STATUS_CHANGED,
+    DECISION_ANSWERED,
+    DECISION_CREATED,
+    TASK_BLOCKED,
+)
 from models.agent import Agent, AgentStatus
 from models.attention import AttentionEvent, AttentionType
 from models.base import utcnow
 from models.decision import DecisionRequest, DecisionStatus
 from models.task import Task, TaskStatus
+from serialization import serialize
 
 
 async def create_decision_request(db: AsyncSession, agent: Agent, task: Task | None, question: str, options: list[dict] | None = None, allow_custom_answer: bool = True) -> DecisionRequest:
@@ -18,6 +26,10 @@ async def create_decision_request(db: AsyncSession, agent: Agent, task: Task | N
     block_agent_and_task(agent, task)
     db.add(build_decision_attention_event(agent, task, decision, question))
     await commit(db)
+    bus.publish(DECISION_CREATED, serialize(decision))
+    bus.publish(AGENT_STATUS_CHANGED, serialize(agent))
+    if task is not None:
+        bus.publish(TASK_BLOCKED, serialize(task))
     return decision
 
 
@@ -57,8 +69,10 @@ async def answer_decision(db: AsyncSession, decision_id: uuid.UUID, answer: str)
     """The other half of the round trip (README 31.3). Claiming the row and deciding whether to unblock the agent are both done under a row lock, so two answers (or an answer racing an orphan cancellation) can't corrupt agent/task state."""
     decision = await claim_pending_decision(db, decision_id, DecisionStatus.ANSWERED, answer=answer)
     await resolve_attention_event(db, decision)
-    await unblock_agent_and_task(db, decision.agent_id, decision.task_id)
+    agent = await unblock_agent_and_task(db, decision.agent_id, decision.task_id)
     await commit(db)
+    bus.publish(DECISION_ANSWERED, serialize(decision))
+    bus.publish(AGENT_STATUS_CHANGED, serialize(agent))
     return decision
 
 
@@ -95,16 +109,17 @@ async def resolve_attention_event(db: AsyncSession, decision: DecisionRequest) -
         event.resolved_at = utcnow()
 
 
-async def unblock_agent_and_task(db: AsyncSession, agent_id: uuid.UUID, task_id: uuid.UUID | None) -> None:
+async def unblock_agent_and_task(db: AsyncSession, agent_id: uuid.UUID, task_id: uuid.UUID | None) -> Agent:
     agent = (await db.execute(select(Agent).where(Agent.id == agent_id).with_for_update())).scalar_one()
     still_pending = await has_pending_decision(db, agent.id)
     agent.needs_attention = still_pending
     if still_pending:
-        return
+        return agent
     agent.status = AgentStatus.WORKING
     if task_id is not None:
         task = await db.get(Task, task_id)
         task.status = TaskStatus.IN_PROGRESS
+    return agent
 
 
 async def has_pending_decision(db: AsyncSession, agent_id: uuid.UUID) -> bool:
@@ -113,3 +128,8 @@ async def has_pending_decision(db: AsyncSession, agent_id: uuid.UUID) -> bool:
     )
     result = await db.execute(query)
     return result.scalar_one() > 0
+
+
+async def list_pending_decisions(db: AsyncSession) -> list[DecisionRequest]:
+    query = select(DecisionRequest).where(DecisionRequest.status == DecisionStatus.PENDING).order_by(DecisionRequest.created_at)
+    return list((await db.execute(query)).scalars())

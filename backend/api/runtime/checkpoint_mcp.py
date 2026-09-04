@@ -8,8 +8,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from mcp.server.mcpserver import MCPServer
-from services.checkpoint_service import create_checkpoint
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from services.checkpoint_service import create_checkpoint
 
 server = MCPServer(name="agent-office-checkpoint")
 

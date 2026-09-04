@@ -87,3 +87,10 @@ async def restore_agent(db: AsyncSession, agent: Agent) -> Agent:
     agent.room_id = main_room.id
     await commit(db)
     return agent
+
+
+async def list_agents(db: AsyncSession, include_inactive: bool = False) -> list[Agent]:
+    query = select(Agent)
+    if not include_inactive:
+        query = query.where(Agent.active.is_(True))
+    return list((await db.execute(query.order_by(Agent.created_at))).scalars())

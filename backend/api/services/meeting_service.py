@@ -52,6 +52,10 @@ async def list_meeting_messages(db, meeting_id: uuid.UUID) -> list[MeetingMessag
     return list((await db.execute(query)).scalars())
 
 
+async def list_meetings(db) -> list[Meeting]:
+    return list((await db.execute(select(Meeting).order_by(Meeting.created_at.desc()))).scalars())
+
+
 async def end_meeting(db, meeting: Meeting, main_room: Room, summary: str, decisions: list[str] | None = None, action_items: list[str] | None = None, unresolved_questions: list[str] | None = None) -> Meeting:
     """Only the transcript is agent-written; the outcome fields are, same as a checkpoint, structured data the app can extract into memory with no model pass (README section 7 + 32.2)."""
     require_active_meeting(meeting)
