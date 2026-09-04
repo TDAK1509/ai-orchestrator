@@ -21,12 +21,18 @@ export AGENT_OFFICE_RUNTIME_ROOT := $(CURDIR)/.agent-office/runtime
 export ALEMBIC := $(VENV)/bin/alembic
 export UVICORN := $(VENV)/bin/uvicorn
 
-install:
+# GNU make remakes an out-of-date included file and then restarts itself, so a .env
+# created here is loaded before any recipe runs. No prerequisite: this fires only when
+# .env is absent, never to compare it against .env.example.
+.env:
+	@cp .env.example $@ && echo "created .env from .env.example."
+
+install: .env
 	python3 -m venv $(VENV)
 	$(VENV)/bin/pip install -e "$(BACKEND)[dev]"
 	npm --prefix $(FRONTEND) install
 
-db:
+db: .env
 	$(COMPOSE) up -d --wait
 
 # a manual escape hatch; `start` no longer depends on it, the entrypoint migrates
