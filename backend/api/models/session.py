@@ -23,6 +23,12 @@ class AgentSession(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # allow-comment: a character count is a proxy for context usage, not real token counting, which needs a tokenizer this repo doesn't have (README 17.5 "track approximate context usage"). server_default, not just default=0: a NOT NULL column added to a table that may already have rows needs a value the database itself can supply during the ALTER, not just one the ORM supplies for new inserts.
     approx_chars: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"), nullable=False)
 
+    # allow-comment: Track B2's durable resume intent -- Agent.status=QUEUED can't express "resume this exact conversation, don't spawn a fresh one", so it lives here instead.
+    resume_pending: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("0"), nullable=False)
+    resume_prompt: Mapped[str | None] = mapped_column(String, nullable=True)
+    resume_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"), nullable=False)
+    resume_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
 
 class BoundVia(str, enum.Enum):
     SPAWN = "spawn"
@@ -61,6 +67,8 @@ class ExecutionRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     kill_requested: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("0"), nullable=False)
     # allow-comment: bytes of stdout.jsonl already applied to domain state (Phase 0.3), so a reattach after a restart resumes past this point instead of replaying it.
     stdout_offset: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"), nullable=False)
+    # allow-comment: Track B3's hang signal -- silence here does not by itself mean stuck, since ask_human's wait_for_answer legitimately produces none while waiting on a human.
+    last_event_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     before_head_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)
     after_head_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)

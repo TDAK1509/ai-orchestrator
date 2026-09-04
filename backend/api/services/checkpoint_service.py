@@ -1,5 +1,7 @@
 import uuid
 
+from sqlalchemy import select
+
 from db import commit
 from models.base import utcnow
 from models.checkpoint import AgentCheckpoint
@@ -29,6 +31,16 @@ async def extract_memories_from_checkpoint(db, checkpoint: AgentCheckpoint) -> l
     checkpoint.used_at = utcnow()
     await commit(db)
     return records
+
+
+async def find_latest_unused_checkpoint(db, agent_id: uuid.UUID) -> AgentCheckpoint | None:
+    query = (
+        select(AgentCheckpoint)
+        .where(AgentCheckpoint.agent_id == agent_id, AgentCheckpoint.used_at.is_(None))
+        .order_by(AgentCheckpoint.created_at.desc())
+        .limit(1)
+    )
+    return (await db.execute(query)).scalars().first()
 
 
 def build_summary_memory(checkpoint: AgentCheckpoint):

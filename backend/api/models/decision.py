@@ -21,6 +21,8 @@ class DecisionRequest(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     task_id: Mapped[uuid.UUID | None] = mapped_column(
         GUID(), ForeignKey("tasks.id"), nullable=True
     )
+    # allow-comment: lets a resume prompt (Track B2.6) cancel or replay decisions scoped to the one session it is continuing, not every pending decision the agent has ever had across other sessions.
+    agent_session_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), ForeignKey("agent_sessions.id"), nullable=True)
 
     question: Mapped[str] = mapped_column(String, nullable=False)
     options: Mapped[list | None] = mapped_column(JSON, nullable=True)

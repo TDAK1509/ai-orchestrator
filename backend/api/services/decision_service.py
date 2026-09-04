@@ -22,9 +22,9 @@ from models.task import Task, TaskStatus
 from serialization import serialize
 
 
-async def create_decision_request(db: AsyncSession, agent: Agent, task: Task | None, question: str, options: list[dict] | None = None, allow_custom_answer: bool = True) -> DecisionRequest:
+async def create_decision_request(db: AsyncSession, agent: Agent, task: Task | None, question: str, options: list[dict] | None = None, allow_custom_answer: bool = True, agent_session_id: uuid.UUID | None = None) -> DecisionRequest:
     """The blocking half of README 19.7's ask_human tool: the caller awaits until answer_decision resolves this row."""
-    decision = build_decision_request(agent, task, question, options, allow_custom_answer)
+    decision = build_decision_request(agent, task, question, options, allow_custom_answer, agent_session_id)
     db.add(decision)
     block_agent_and_task(agent, task)
     attention_event = build_decision_attention_event(agent, task, decision, question)
@@ -43,12 +43,13 @@ def publish_decision_created(decision: DecisionRequest, agent: Agent, task: Task
 
 
 def build_decision_request(
-    agent: Agent, task: Task | None, question: str, options: list[dict] | None, allow_custom_answer: bool
+    agent: Agent, task: Task | None, question: str, options: list[dict] | None, allow_custom_answer: bool, agent_session_id: uuid.UUID | None
 ) -> DecisionRequest:
     return DecisionRequest(
         id=uuid.uuid4(),
         agent_id=agent.id,
         task_id=task.id if task else None,
+        agent_session_id=agent_session_id,
         question=question,
         options=options,
         allow_custom_answer=allow_custom_answer,
@@ -97,6 +98,16 @@ def publish_decision_answered(decision: DecisionRequest, agent: Agent, task: Tas
 async def cancel_pending_decisions_for_agent(db: AsyncSession, agent_id: uuid.UUID) -> list[DecisionRequest]:
     """Called when an agent's run is found dead (README 31.5 reconciliation): a decision nobody can still act on must not later "answer" and resurrect the agent as working."""
     query = select(DecisionRequest).where(DecisionRequest.agent_id == agent_id, DecisionRequest.status == DecisionStatus.PENDING)
+    return await cancel_pending_decisions(db, query)
+
+
+async def cancel_pending_decisions_for_session(db: AsyncSession, agent_session_id: uuid.UUID) -> list[DecisionRequest]:
+    """Track B2.6: scoped to one session, not the whole agent -- an agent-wide cancel would also cancel a pending decision from a different, still-live session for the same agent."""
+    query = select(DecisionRequest).where(DecisionRequest.agent_session_id == agent_session_id, DecisionRequest.status == DecisionStatus.PENDING)
+    return await cancel_pending_decisions(db, query)
+
+
+async def cancel_pending_decisions(db: AsyncSession, query) -> list[DecisionRequest]:
     pending = list((await db.execute(query)).scalars())
     cancelled, resolved_events = await cancel_and_resolve_all(db, pending)
     await commit(db)

@@ -49,6 +49,9 @@ class OwnedProcess:
     async def terminate(self, grace_period_seconds: float = 5.0) -> None:
         await terminate_pid(self.pid, grace_period_seconds)
 
+    def is_alive(self) -> bool:
+        return is_pid_alive(self.pid)
+
     @property
     def stderr_tail(self) -> list[str]:
         return read_stderr_tail(self.run_directory)

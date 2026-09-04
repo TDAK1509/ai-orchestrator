@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from db import DEFAULT_DATABASE_URL
 from db import commit as db_commit
 from models.agent import Agent
-from models.attention import AttentionEvent, AttentionType
 from models.base import utcnow
 from models.session import AgentSession, BoundVia, ExecutionRun, RunStatus
 from models.worktree import TaskWorktree
@@ -193,6 +192,7 @@ class RuntimeService:
     async def _apply_line(self, db, agent_session: AgentSession, run: ExecutionRun, line: str, offset: int) -> DomainEvent:
         track_context_usage(agent_session, line)
         run.stdout_offset = offset
+        run.last_event_at = utcnow()
         event = parse_stream_line(line)
         await self._apply_event(db, agent_session, event)
         self._remember_result_outcome(run.id, event)
@@ -254,36 +254,6 @@ class RuntimeService:
             run = await db.get(ExecutionRun, run_id)
             run.kill_requested = True
             await db_commit(db)
-
-    async def reconcile_orphans(self) -> list[ExecutionRun]:
-        async with self.session_factory() as db:
-            running = await self._find_running_runs(db)
-            orphans = [run for run in running if not self._is_run_alive(run)]
-            for run in orphans:
-                await self._mark_run_failed(db, run)
-            return orphans
-
-    async def _find_running_runs(self, db) -> list[ExecutionRun]:
-        result = await db.execute(select(ExecutionRun).where(ExecutionRun.status == RunStatus.RUNNING))
-        return list(result.scalars())
-
-    def _is_run_alive(self, run: ExecutionRun) -> bool:
-        return run.pid is not None and process.is_pid_alive(run.pid)
-
-    async def _mark_run_failed(self, db, run: ExecutionRun) -> None:
-        run.status = RunStatus.FAILED
-        run.completed_at = utcnow()
-        db.add(self._build_orphan_attention_event(run))
-        await db_commit(db)
-
-    def _build_orphan_attention_event(self, run: ExecutionRun) -> AttentionEvent:
-        return AttentionEvent(
-            id=uuid.uuid4(),
-            type=AttentionType.TASK_FAILED,
-            title="Execution run orphaned",
-            message=f"Run {run.id} had no live process on startup and was marked failed.",
-        )
-
 
 def require_resumable_session(agent: Agent, task_worktree: TaskWorktree, agent_session: AgentSession) -> None:
     if agent_session.agent_id != agent.id or agent_session.task_worktree_id != task_worktree.id:
