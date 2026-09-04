@@ -7,9 +7,12 @@ from db import commit
 from events.bus import bus
 from events.schema import (
     AGENT_STATUS_CHANGED,
+    ATTENTION_CREATED,
+    ATTENTION_RESOLVED,
     DECISION_ANSWERED,
     DECISION_CREATED,
     TASK_BLOCKED,
+    TASK_UPDATED,
 )
 from models.agent import Agent, AgentStatus
 from models.attention import AttentionEvent, AttentionType
@@ -24,13 +27,19 @@ async def create_decision_request(db: AsyncSession, agent: Agent, task: Task | N
     decision = build_decision_request(agent, task, question, options, allow_custom_answer)
     db.add(decision)
     block_agent_and_task(agent, task)
-    db.add(build_decision_attention_event(agent, task, decision, question))
+    attention_event = build_decision_attention_event(agent, task, decision, question)
+    db.add(attention_event)
     await commit(db)
+    publish_decision_created(decision, agent, task, attention_event)
+    return decision
+
+
+def publish_decision_created(decision: DecisionRequest, agent: Agent, task: Task | None, attention_event: AttentionEvent) -> None:
     bus.publish(DECISION_CREATED, serialize(decision))
     bus.publish(AGENT_STATUS_CHANGED, serialize(agent))
+    bus.publish(ATTENTION_CREATED, serialize(attention_event))
     if task is not None:
         bus.publish(TASK_BLOCKED, serialize(task))
-    return decision
 
 
 def build_decision_request(
@@ -68,25 +77,47 @@ def build_decision_attention_event(agent: Agent, task: Task | None, decision: De
 async def answer_decision(db: AsyncSession, decision_id: uuid.UUID, answer: str) -> DecisionRequest:
     """The other half of the round trip (README 31.3). Claiming the row and deciding whether to unblock the agent are both done under a row lock, so two answers (or an answer racing an orphan cancellation) can't corrupt agent/task state."""
     decision = await claim_pending_decision(db, decision_id, DecisionStatus.ANSWERED, answer=answer)
-    await resolve_attention_event(db, decision)
+    attention_event = await resolve_attention_event(db, decision)
     agent = await unblock_agent_and_task(db, decision.agent_id, decision.task_id)
+    task = await db.get(Task, decision.task_id) if decision.task_id else None
     await commit(db)
+    publish_decision_answered(decision, agent, task, attention_event)
+    return decision
+
+
+def publish_decision_answered(decision: DecisionRequest, agent: Agent, task: Task | None, attention_event: AttentionEvent | None) -> None:
     bus.publish(DECISION_ANSWERED, serialize(decision))
     bus.publish(AGENT_STATUS_CHANGED, serialize(agent))
-    return decision
+    if attention_event is not None:
+        bus.publish(ATTENTION_RESOLVED, serialize(attention_event))
+    if task is not None:
+        bus.publish(TASK_UPDATED, serialize(task))
 
 
 async def cancel_pending_decisions_for_agent(db: AsyncSession, agent_id: uuid.UUID) -> list[DecisionRequest]:
     """Called when an agent's run is found dead (README 31.5 reconciliation): a decision nobody can still act on must not later "answer" and resurrect the agent as working."""
     query = select(DecisionRequest).where(DecisionRequest.agent_id == agent_id, DecisionRequest.status == DecisionStatus.PENDING)
     pending = list((await db.execute(query)).scalars())
+    cancelled, resolved_events = await cancel_and_resolve_all(db, pending)
+    await commit(db)
+    publish_resolved_attention_events(resolved_events)
+    return cancelled
+
+
+async def cancel_and_resolve_all(db: AsyncSession, pending: list[DecisionRequest]) -> tuple[list[DecisionRequest], list[AttentionEvent | None]]:
     cancelled = []
+    resolved_events = []
     for decision in pending:
         claimed = await claim_pending_decision(db, decision.id, DecisionStatus.CANCELLED)
-        await resolve_attention_event(db, claimed)
+        resolved_events.append(await resolve_attention_event(db, claimed))
         cancelled.append(claimed)
-    await commit(db)
-    return cancelled
+    return cancelled, resolved_events
+
+
+def publish_resolved_attention_events(events: list[AttentionEvent | None]) -> None:
+    for event in events:
+        if event is not None:
+            bus.publish(ATTENTION_RESOLVED, serialize(event))
 
 
 async def claim_pending_decision(db: AsyncSession, decision_id: uuid.UUID, new_status: DecisionStatus, answer: str | None = None) -> DecisionRequest:
@@ -101,12 +132,13 @@ async def claim_pending_decision(db: AsyncSession, decision_id: uuid.UUID, new_s
     return await db.get(DecisionRequest, decision_id)
 
 
-async def resolve_attention_event(db: AsyncSession, decision: DecisionRequest) -> None:
+async def resolve_attention_event(db: AsyncSession, decision: DecisionRequest) -> AttentionEvent | None:
     query = select(AttentionEvent).where(AttentionEvent.decision_request_id == decision.id)
     event = (await db.execute(query)).scalars().first()
     if event is not None:
         event.resolved = True
         event.resolved_at = utcnow()
+    return event
 
 
 async def unblock_agent_and_task(db: AsyncSession, agent_id: uuid.UUID, task_id: uuid.UUID | None) -> Agent:

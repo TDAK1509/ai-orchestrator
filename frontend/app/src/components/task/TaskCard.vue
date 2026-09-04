@@ -15,7 +15,7 @@ function assigneeLabel(): string {
 }
 
 function idleAgents() {
-  return agents.agents.filter((agent) => agent.status === "idle")
+  return agents.activeAgents.filter((agent) => agent.status === "idle")
 }
 
 function assignTo(agentId: string): void {

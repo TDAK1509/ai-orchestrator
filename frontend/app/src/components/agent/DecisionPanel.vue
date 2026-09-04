@@ -11,7 +11,17 @@ const customAnswer = ref("")
 const submitting = ref(false)
 
 function answerText(): string {
-  return selectedOption.value ?? customAnswer.value
+  return customAnswer.value || selectedOption.value || ""
+}
+
+function chooseOption(label: string): void {
+  selectedOption.value = label
+  customAnswer.value = ""
+}
+
+function typeCustomAnswer(value: string): void {
+  customAnswer.value = value
+  if (value) selectedOption.value = null
 }
 
 async function submit(): Promise<void> {
@@ -31,16 +41,22 @@ async function submit(): Promise<void> {
     <p class="mt-2 text-sm text-gray-800">{{ decision.question }}</p>
     <div v-if="decision.options" class="mt-3 flex flex-col gap-2">
       <label v-for="option in decision.options" :key="option.label" class="flex items-center gap-2 text-sm">
-        <input type="radio" :value="option.label" v-model="selectedOption" />
+        <input
+          type="radio"
+          :value="option.label"
+          :checked="selectedOption === option.label"
+          @change="chooseOption(option.label)"
+        />
         {{ option.label }}
       </label>
     </div>
     <input
       v-if="decision.allow_custom_answer"
-      v-model="customAnswer"
+      :value="customAnswer"
       type="text"
       placeholder="Write another answer..."
       class="mt-3 w-full rounded border border-gray-300 px-2 py-1 text-sm"
+      @input="typeCustomAnswer(($event.target as HTMLInputElement).value)"
     />
     <button
       class="mt-3 rounded bg-red-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"

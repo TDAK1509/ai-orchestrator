@@ -20,10 +20,13 @@ const selectedAgent = ref<Agent | null>(null)
 const showCreateTask = ref(false)
 const showHireAgent = ref(false)
 
-onMounted(async () => {
-  await Promise.all([agents.fetchAgents(), tasks.fetchTasks(), attention.fetchPendingDecisions(), attention.fetchAttentionEvents()])
-  startRealtimeDispatch()
+onMounted(() => {
+  startRealtimeDispatch(loadSnapshots)
 })
+
+async function loadSnapshots(): Promise<void> {
+  await Promise.all([agents.fetchAgents(), tasks.fetchTasks(), attention.fetchPendingDecisions(), attention.fetchAttentionEvents()])
+}
 
 function openAttentionEvent(event: AttentionEvent): void {
   const agent = event.agent_id ? agents.byId(event.agent_id) : undefined

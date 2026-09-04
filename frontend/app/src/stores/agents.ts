@@ -8,6 +8,7 @@ export const useAgentsStore = defineStore("agents", {
   }),
   getters: {
     byId: (state) => (id: string) => state.agents.find((agent) => agent.id === id),
+    activeAgents: (state) => state.agents.filter((agent) => agent.active),
   },
   actions: {
     async fetchAgents() {

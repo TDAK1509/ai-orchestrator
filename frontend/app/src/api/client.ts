@@ -1,4 +1,5 @@
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000"
+// allow-comment: VITE_API_TOKEN ships inside this public JS bundle, so it gates direct API/WS access from a random client, not this frontend page itself -- keep the page's own hosting private if that page needs to be the boundary.
 const API_TOKEN = import.meta.env.VITE_API_TOKEN as string | undefined
 
 function authHeaders(): HeadersInit {
@@ -6,10 +7,11 @@ function authHeaders(): HeadersInit {
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const hasBody = body !== undefined
   const response = await fetch(`${BASE_URL}${path}`, {
     method,
-    headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    headers: { ...(hasBody ? { "Content-Type": "application/json" } : {}), ...authHeaders() },
+    body: hasBody ? JSON.stringify(body) : undefined,
   })
   if (!response.ok) {
     const detail = await response.text()

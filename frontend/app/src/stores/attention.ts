@@ -33,10 +33,21 @@ export const useAttentionStore = defineStore("attention", {
     },
     receiveDecisionCreated(decision: DecisionRequest) {
       this.pendingDecisions.push(decision)
-      if (this.soundEnabled) playPing()
     },
     receiveDecisionAnswered(decision: DecisionRequest) {
       this.pendingDecisions = this.pendingDecisions.filter((d) => d.id !== decision.id)
+    },
+    receiveAttentionCreated(event: AttentionEvent) {
+      this.upsertAttentionEvent(event)
+      if (this.soundEnabled) playPing()
+    },
+    receiveAttentionResolved(event: AttentionEvent) {
+      this.upsertAttentionEvent(event)
+    },
+    upsertAttentionEvent(event: AttentionEvent) {
+      const index = this.attentionEvents.findIndex((existing) => existing.id === event.id)
+      if (index === -1) this.attentionEvents.push(event)
+      else this.attentionEvents[index] = event
     },
   },
 })

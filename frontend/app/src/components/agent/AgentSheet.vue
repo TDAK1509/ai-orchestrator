@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue"
 import type { Agent } from "../../api/types"
+import { useActivityStore } from "../../stores/activity"
 import { useAgentsStore } from "../../stores/agents"
 import { useAttentionStore } from "../../stores/attention"
 import { useTasksStore } from "../../stores/tasks"
@@ -12,10 +13,12 @@ defineEmits<{ close: [] }>()
 const tasks = useTasksStore()
 const agentsStore = useAgentsStore()
 const attention = useAttentionStore()
+const activity = useActivityStore()
 const confirmingFire = ref(false)
 
 const currentTask = computed(() => (props.agent.current_task_id ? tasks.byId(props.agent.current_task_id) : undefined))
 const decision = computed(() => attention.decisionForAgent(props.agent.id))
+const recentActivity = computed(() => activity.forAgent(props.agent.id).slice().reverse())
 
 async function confirmFire(): Promise<void> {
   await agentsStore.fireAgent(props.agent.id)
@@ -41,6 +44,15 @@ async function confirmFire(): Promise<void> {
       <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-400">Current Task</h3>
       <p class="mt-1 font-medium">{{ currentTask.title }}</p>
       <p class="mt-1 text-sm text-gray-600">{{ currentTask.description }}</p>
+    </div>
+
+    <div v-if="recentActivity.length" class="mt-4 border-t border-gray-100 pt-4">
+      <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-400">Activity</h3>
+      <ul class="mt-1 flex flex-col gap-1 text-sm text-gray-600">
+        <li v-for="(item, index) in recentActivity" :key="index">
+          {{ item.toolName ? `Using ${item.toolName}` : item.text || item.kind }}
+        </li>
+      </ul>
     </div>
 
     <div class="mt-6 border-t border-gray-100 pt-4">

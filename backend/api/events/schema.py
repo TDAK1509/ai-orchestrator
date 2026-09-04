@@ -8,11 +8,15 @@ TASK_CREATED = "task.created"
 TASK_ASSIGNED = "task.assigned"
 TASK_BLOCKED = "task.blocked"
 TASK_COMPLETED = "task.completed"
+TASK_UPDATED = "task.updated"
 
 RUNTIME_EVENT = "runtime.event"
 
 DECISION_CREATED = "decision.created"
 DECISION_ANSWERED = "decision.answered"
+
+ATTENTION_CREATED = "attention.created"
+ATTENTION_RESOLVED = "attention.resolved"
 
 MEETING_CREATED = "meeting.created"
 MEETING_MESSAGE = "meeting.message"
