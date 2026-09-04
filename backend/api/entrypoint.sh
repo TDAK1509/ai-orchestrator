@@ -4,14 +4,60 @@
 set -eu
 cd "$(dirname "$0")"
 
-if [ "${AGENT_OFFICE_AUTO_MIGRATE:-1}" = "1" ]; then
-    # Probe the stamped revision BEFORE upgrading. If this checkout's migration files
-    # do not contain the revision the database was stamped with -- almost always another
-    # worktree sharing one compose project -- `alembic upgrade` dies with a raw traceback
-    # and, under a restart loop, crash-loops. Print the remedy instead.
+# `make start` already exports .env's variables (Makefile's `-include .env` + bare
+# `export`), including DATABASE_URL; this only matters for a direct invocation, which
+# does not go through Make at all and would otherwise migrate/serve against whatever
+# db.py's own fallback resolves to.
+if [ -f ../../.env ]; then
+    set -a
+    . ../../.env
+    set +a
+fi
+
+# Relative to this script's own directory (see the `cd` above), matching Makefile's
+# VENV := $(CURDIR)/.venv. `make start` overrides both with absolute paths, so its
+# behaviour is unchanged; this fallback only matters for a direct invocation.
+VENV_BIN="../../.venv/bin"
+ALEMBIC="${ALEMBIC:-$VENV_BIN/alembic}"
+UVICORN="${UVICORN:-$VENV_BIN/uvicorn}"
+
+run_entrypoint() {
+    require_executable "$ALEMBIC" ALEMBIC
+    require_executable "$UVICORN" UVICORN
+    migrate_to_head
+    exec "$UVICORN" app:app --port 8000 "$@"
+}
+
+require_executable() {
+    case "$1" in
+        */*) [ -x "$1" ] && return 0 ;;
+        *) command -v "$1" >/dev/null 2>&1 && return 0 ;;
+    esac
+    echo "$2 not found or not executable at '$1'. Run \`make install\`, or export $2 to override it." >&2
+    exit 1
+}
+
+migrate_to_head() {
     set +e
-    probe="$("$ALEMBIC" current 2>&1)"; probe_rc=$?
+    probe="$(read_current_revision_output)"
+    probe_rc=$?
     set -e
+    refuse_unknown_revision "$probe" "$probe_rc"
+    echo "[entrypoint] alembic upgrade head"
+    "$ALEMBIC" upgrade head
+}
+
+read_current_revision_output() {
+    "$ALEMBIC" current 2>&1
+}
+
+# Probes the stamped revision BEFORE upgrading. If this checkout's migration files do
+# not contain the revision the database was stamped with -- almost always another
+# worktree sharing one compose project -- `alembic upgrade` dies with a raw traceback
+# and, under a restart loop, crash-loops. Print the remedy instead.
+refuse_unknown_revision() {
+    probe="$1"
+    probe_rc="$2"
     if [ "$probe_rc" -ne 0 ] && printf '%s\n' "$probe" | grep -q "Can't locate revision identified by"; then
         bad="$(printf '%s\n' "$probe" | sed -n "s/.*identified by '\([^']*\)'.*/\1/p" | head -n1)"
         {
@@ -23,10 +69,6 @@ if [ "${AGENT_OFFICE_AUTO_MIGRATE:-1}" = "1" ]; then
         } >&2
         exit 1
     fi
-    echo "[entrypoint] alembic upgrade head"
-    "$ALEMBIC" upgrade head
-else
-    echo "[entrypoint] AGENT_OFFICE_AUTO_MIGRATE=0; skipping migrations."
-fi
+}
 
-exec "$UVICORN" app:app --port 8000 "$@"
+run_entrypoint "$@"

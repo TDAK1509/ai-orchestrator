@@ -30,11 +30,12 @@ Behind the interface, the system must run real Claude Code processes in isolated
 
 ## Running it
 
-1. `cp .env.example .env`.
-2. `make install` — once per checkout. Creates `.venv`, installs the backend and frontend dependencies.
-3. `make start` — brings up Postgres, then the backend and the frontend together.
+1. `make install` — once per checkout. Creates `.env` from `.env.example` if missing, creates `.venv`, installs the backend and frontend dependencies.
+2. `make start` — brings up Postgres, then the backend and the frontend together.
 
-`make start` waits for Postgres to report healthy, then runs migrations automatically before the backend starts. Set `AGENT_OFFICE_AUTO_MIGRATE=0` in `.env` to skip that and manage migrations yourself with `make migrate`.
+`make start` waits for Postgres to report healthy, then migrates before the backend starts. Every start migrates; there is no flag to skip it. `make migrate` still exists as a way to migrate without starting the backend, not as a way to opt out.
+
+`.env` is created automatically, from `.env.example`, the first time any `make` target runs on a fresh checkout — not only `install` or `db`. GNU Make remakes a missing included file before evaluating whichever target you asked for, and even a dry run (`make -n <target>`) does this for real.
 
 The first `make start` is slow: the backend downloads its embedding model (~50MB) before it serves its first request. That is expected, not a hang.
 
