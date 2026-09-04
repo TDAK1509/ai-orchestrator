@@ -22,7 +22,7 @@ from routers import (
 )
 from runtime.runtime_service import RuntimeService, RuntimeSettings
 from services.startup_service import reconcile_on_startup
-from services.task_service import TaskRuntimePolicy
+from services.task_service import TaskRuntimePolicy, shutdown_background_runs
 
 
 @asynccontextmanager
@@ -35,6 +35,7 @@ async def lifespan(app: FastAPI):
     async with app.state.session_factory() as db:
         await reconcile_on_startup(db, app.state.runtime_service)
     yield
+    await shutdown_background_runs(app.state.runtime_service)
     await engine.dispose()
 
 

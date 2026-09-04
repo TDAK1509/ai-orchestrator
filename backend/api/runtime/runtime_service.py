@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -21,6 +22,9 @@ from .mcp_config import McpServerRef, remove_mcp_config, write_mcp_config
 from .prompt import build_follow_up_message
 from .stream_parser import DomainEvent, parse_stream_line
 
+TERMINAL_RUN_STATUSES = (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.KILLED, RunStatus.INTERRUPTED)
+PROGRESS_FLUSH_SECONDS = 10.0
+
 
 @dataclass
 class RuntimeSettings:
@@ -40,8 +44,9 @@ class RuntimeService:
         # allow-comment: no bound self.db. spawn/resume/stream_events/reconcile_orphans each open their own session, since spawn and stream_events run in genuinely concurrent asyncio tasks (one background worker per run) and a single shared AsyncSession cannot be touched from two tasks at once.
         self.session_factory = session_factory
         self.settings = settings
-        self._processes: dict[uuid.UUID, process.ManagedProcess] = {}
-        self._kill_requested: set[uuid.UUID] = set()
+        self._processes: dict[uuid.UUID, process.OwnedProcess] = {}
+        self._last_progress_flush: dict[uuid.UUID, float] = {}
+        self._result_outcome: dict[uuid.UUID, str | None] = {}
 
     async def spawn(
         self,
@@ -97,7 +102,7 @@ class RuntimeService:
         return agent_session, run
 
     async def _launch_process(self, db, agent_session, run, task_worktree, mcp_config_path, resume_session, initial_message, env) -> None:
-        managed = await self._spawn_process(task_worktree, mcp_config_path, resume_session, env)
+        managed = await self._spawn_process(agent_session.agent_id, run.id, task_worktree, mcp_config_path, resume_session, env)
         run.pid = managed.pid
         agent_session.approx_chars += len(str(initial_message))
         await db_commit(db)
@@ -128,10 +133,14 @@ class RuntimeService:
         return run
 
     async def _spawn_process(
-        self, task_worktree, mcp_config_path: Path, resume_session: AgentSession | None, env: dict[str, str] | None
-    ) -> process.ManagedProcess:
+        self, agent_id: uuid.UUID, run_id: uuid.UUID, task_worktree, mcp_config_path: Path, resume_session: AgentSession | None, env: dict[str, str] | None
+    ) -> process.OwnedProcess:
         command = self._build_command(mcp_config_path, resume_session)
-        return await process.spawn(command, cwd=Path(task_worktree.path), env=env)
+        run_directory = self._run_dir(agent_id, run_id)
+        return await process.spawn(command, cwd=Path(task_worktree.path), run_directory=run_directory, env=env)
+
+    def _run_dir(self, agent_id: uuid.UUID, run_id: uuid.UUID) -> Path:
+        return process.run_dir(self.settings.runtime_root, agent_id, run_id)
 
     def _build_command(self, mcp_config_path: Path, resume_session: AgentSession | None) -> list[str]:
         command = self._base_command_args(mcp_config_path)
@@ -162,57 +171,89 @@ class RuntimeService:
 
     async def stream_events(self, run_id: uuid.UUID) -> AsyncIterator[DomainEvent]:
         """Owns one session for the run's whole life (README 31.1): this is the one worker allowed to write these rows, and it never shares that session with spawn() or another run's stream."""
-        managed = self._processes[run_id]
         async with self.session_factory() as db:
             agent_session, run = await self._load_session_and_run(db, run_id)
+            managed = self.resolve_process(agent_session.agent_id, run)
             try:
-                async for line in managed.iter_stdout_lines():
-                    event = await self._apply_line(db, agent_session, line)
-                    yield event
+                async for line, offset in managed.iter_stdout_lines(run.stdout_offset):
+                    yield await self._apply_line(db, agent_session, run, line, offset)
             finally:
                 await self._finalize_run(db, managed, agent_session, run)
+
+    def resolve_process(self, agent_id: uuid.UUID, run: ExecutionRun) -> process.OwnedProcess | process.AdoptedProcess:
+        """Phase 0.3: an in-process run still has its live asyncio handle; a run this backend never spawned (adopted after a restart) is reattached from the files its supervisor wrote."""
+        owned = self._processes.get(run.id)
+        return owned if owned is not None else process.AdoptedProcess(self._run_dir(agent_id, run.id))
 
     async def _load_session_and_run(self, db, run_id: uuid.UUID) -> tuple[AgentSession, ExecutionRun]:
         run = await db.get(ExecutionRun, run_id)
         agent_session = await db.get(AgentSession, run.agent_session_id)
         return agent_session, run
 
-    async def _apply_line(self, db, agent_session: AgentSession, line: str) -> DomainEvent:
+    async def _apply_line(self, db, agent_session: AgentSession, run: ExecutionRun, line: str, offset: int) -> DomainEvent:
         track_context_usage(agent_session, line)
+        run.stdout_offset = offset
         event = parse_stream_line(line)
         await self._apply_event(db, agent_session, event)
+        self._remember_result_outcome(run.id, event)
+        await self._flush_progress_if_due(db, run)
         return event
+
+    def _remember_result_outcome(self, run_id: uuid.UUID, event: DomainEvent) -> None:
+        if event.kind == "run_finished":
+            self._result_outcome[run_id] = event.exit_result
 
     async def _apply_event(self, db, agent_session: AgentSession, event: DomainEvent) -> None:
         if event.kind == "session_started" and event.claude_session_id:
             agent_session.claude_session_id = event.claude_session_id
             await db_commit(db)
 
-    async def _finalize_run(self, db, managed: process.ManagedProcess, agent_session: AgentSession, run: ExecutionRun) -> None:
-        # allow-comment: a caller stopping early (disconnect, cancellation) must still stop the process and record a status, not leak a running Claude session and a stale RUNNING row.
+    async def _flush_progress_if_due(self, db, run: ExecutionRun) -> None:
+        """Persists stdout_offset so a reattach resumes past applied output (Phase 0.3), throttled so a commit isn't serialized on db.COMMIT_LOCK for every single line."""
+        now = time.monotonic()
+        if now - self._last_progress_flush.get(run.id, 0.0) < PROGRESS_FLUSH_SECONDS:
+            return
+        self._last_progress_flush[run.id] = now
+        await db_commit(db)
+
+    async def _finalize_run(self, db, managed: process.OwnedProcess | process.AdoptedProcess, agent_session: AgentSession, run: ExecutionRun) -> None:
+        # allow-comment: a caller stopping early (disconnect, cancellation, explicit kill) must still stop the process and record a status; for a run already finished when this loop started, terminate()/wait() are harmless no-ops.
         await managed.terminate()
         exit_code = await managed.wait()
         run.exit_code = exit_code
         run.completed_at = utcnow()
-        run.status = self._resolve_final_status(run, exit_code)
+        run.status = await self._resolve_final_status(db, run, exit_code, self._result_outcome.pop(run.id, None))
         run.after_head_commit = await worktree.read_head_commit(Path(agent_session.cwd))
         self._processes.pop(run.id, None)
+        self._last_progress_flush.pop(run.id, None)
         remove_mcp_config(self._agent_runtime_dir(agent_session.agent_id))
         await db_commit(db)
 
-    def _resolve_final_status(self, run: ExecutionRun, exit_code: int) -> RunStatus:
-        # allow-comment: kept off kill_run so only this stream loop's task ever writes run status, avoiding a second task racing this run's session.
-        if run.id in self._kill_requested:
-            self._kill_requested.discard(run.id)
+    async def _resolve_final_status(self, db, run: ExecutionRun, exit_code: int | None, result_outcome: str | None) -> RunStatus:
+        if await self._was_kill_requested(db, run.id):
             return RunStatus.KILLED
-        return RunStatus.COMPLETED if exit_code == 0 else RunStatus.FAILED
+        if exit_code is not None:
+            return RunStatus.COMPLETED if exit_code == 0 else RunStatus.FAILED
+        if result_outcome is not None:
+            return RunStatus.COMPLETED if result_outcome == "success" else RunStatus.FAILED
+        # allow-comment: the process is gone, exit.json was never written and no result event was seen -- the backend cannot know whether the work landed, so this is neither success nor failure but an open question for Track B to resume or resolve.
+        return RunStatus.INTERRUPTED
+
+    async def _was_kill_requested(self, db, run_id: uuid.UUID) -> bool:
+        result = await db.execute(select(ExecutionRun.kill_requested).where(ExecutionRun.id == run_id))
+        return bool(result.scalar_one())
 
     async def kill_run(self, run_id: uuid.UUID) -> None:
+        await self._mark_kill_requested(run_id)
         managed = self._processes.get(run_id)
-        if managed is None:
-            return
-        self._kill_requested.add(run_id)
-        await managed.terminate()
+        if managed is not None:
+            await managed.terminate()
+
+    async def _mark_kill_requested(self, run_id: uuid.UUID) -> None:
+        async with self.session_factory() as db:
+            run = await db.get(ExecutionRun, run_id)
+            run.kill_requested = True
+            await db_commit(db)
 
     async def reconcile_orphans(self) -> list[ExecutionRun]:
         async with self.session_factory() as db:

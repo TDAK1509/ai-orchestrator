@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, text
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import GUID, Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -35,6 +35,7 @@ class RunStatus(str, enum.Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     KILLED = "killed"
+    INTERRUPTED = "interrupted"
 
 
 class ExecutionRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -49,12 +50,17 @@ class ExecutionRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Enum(BoundVia, native_enum=False, length=10), nullable=False
     )
     status: Mapped[RunStatus] = mapped_column(
-        Enum(RunStatus, native_enum=False, length=10),
+        Enum(RunStatus, native_enum=False, length=20),
         default=RunStatus.RUNNING,
         nullable=False,
     )
     pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
     exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # allow-comment: a deliberate kill (Phase 0.4) must survive a crash between the signal and finalization, so it is a durable column, not the in-memory set this replaces.
+    kill_requested: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("0"), nullable=False)
+    # allow-comment: bytes of stdout.jsonl already applied to domain state (Phase 0.3), so a reattach after a restart resumes past this point instead of replaying it.
+    stdout_offset: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"), nullable=False)
 
     before_head_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)
     after_head_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)

@@ -37,7 +37,7 @@ from services.scheduler_service import claim_next_queued_agent, claim_slot_or_qu
 from services.worktree_service import ensure_task_worktree
 
 _DIRECT_MERGE_LOCK = asyncio.Lock()
-_BACKGROUND_RUNS: set[asyncio.Task] = set()
+_BACKGROUND_RUNS: dict[uuid.UUID, asyncio.Task] = {}
 
 
 @dataclass
@@ -93,11 +93,27 @@ async def resolve_agent_mcp_servers(db, repo_root: Path, agent: Agent) -> list[M
 
 
 def schedule_run_completion(runtime_service, repo_root, agent_id, task_id, task_worktree_id, run_id, policy) -> None:
-    """One worker owns one process for its whole life (README 31.1): this is that worker, driving the run to a finished task on its own session, never the caller's."""
+    """One worker owns one process for its whole life (README 31.1): this is that worker, driving the run to a finished task on its own session, never the caller's. Tracked by run_id (Phase 0.6) so a shutdown can mark each one killed before draining it."""
     coroutine = drive_run_to_completion(runtime_service, repo_root, agent_id, task_id, task_worktree_id, run_id, policy)
     background_task = asyncio.create_task(coroutine)
-    _BACKGROUND_RUNS.add(background_task)
-    background_task.add_done_callback(_BACKGROUND_RUNS.discard)
+    _BACKGROUND_RUNS[run_id] = background_task
+    background_task.add_done_callback(lambda _task: _BACKGROUND_RUNS.pop(run_id, None))
+
+
+async def shutdown_background_runs(runtime_service: RuntimeService) -> None:
+    """A background run's own coroutine finishes on its own once kill_run stops its process (a normal stream EOF, not a cancellation): cancelling stream_events mid-line would instead need a bug-prone GeneratorExit path through an async generator."""
+    tasks = dict(_BACKGROUND_RUNS)
+    for run_id in tasks:
+        await runtime_service.kill_run(run_id)
+    await _await_or_cancel(tasks)
+
+
+async def _await_or_cancel(tasks: dict[uuid.UUID, asyncio.Task], timeout_seconds: float = 15.0) -> None:
+    try:
+        await asyncio.wait_for(asyncio.gather(*tasks.values(), return_exceptions=True), timeout=timeout_seconds)
+    except TimeoutError:
+        for task in tasks.values():
+            task.cancel()
 
 
 async def drive_run_to_completion(runtime_service, repo_root, agent_id, task_id, task_worktree_id, run_id, policy) -> None:
