@@ -35,7 +35,7 @@ Behind the interface, the system must run real Claude Code processes in isolated
 
 `make start` waits for Postgres to report healthy, then migrates before the backend starts. Every start migrates; there is no flag to skip it. `make migrate` still exists as a way to migrate without starting the backend, not as a way to opt out.
 
-`.env` is created automatically the first time `make install` or `make db` runs, from `.env.example`. `make -n db` (a dry run) still creates it for real — that's GNU Make remaking an out-of-date included file before it even parses `-n`, not a bug in this rule.
+`.env` is created automatically, from `.env.example`, the first time any `make` target runs on a fresh checkout — not only `install` or `db`. GNU Make remakes a missing included file before evaluating whichever target you asked for, and even a dry run (`make -n <target>`) does this for real.
 
 The first `make start` is slow: the backend downloads its embedding model (~50MB) before it serves its first request. That is expected, not a hang.
 

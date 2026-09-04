@@ -4,6 +4,16 @@
 set -eu
 cd "$(dirname "$0")"
 
+# `make start` already exports .env's variables (Makefile's `-include .env` + bare
+# `export`), including DATABASE_URL; this only matters for a direct invocation, which
+# does not go through Make at all and would otherwise migrate/serve against whatever
+# db.py's own fallback resolves to.
+if [ -f ../../.env ]; then
+    set -a
+    . ../../.env
+    set +a
+fi
+
 # Relative to this script's own directory (see the `cd` above), matching Makefile's
 # VENV := $(CURDIR)/.venv. `make start` overrides both with absolute paths, so its
 # behaviour is unchanged; this fallback only matters for a direct invocation.
@@ -19,7 +29,10 @@ run_entrypoint() {
 }
 
 require_executable() {
-    [ -x "$1" ] && return 0
+    case "$1" in
+        */*) [ -x "$1" ] && return 0 ;;
+        *) command -v "$1" >/dev/null 2>&1 && return 0 ;;
+    esac
     echo "$2 not found or not executable at '$1'. Run \`make install\`, or export $2 to override it." >&2
     exit 1
 }
