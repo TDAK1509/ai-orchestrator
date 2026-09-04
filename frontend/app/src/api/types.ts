@@ -9,6 +9,7 @@ export interface Agent {
   needs_attention: boolean
   active: boolean
   room_id: string | null
+  team_id: string | null
   current_task_id: string | null
   created_at: string
 }
@@ -85,6 +86,14 @@ export interface Room {
   created_at: string
 }
 
+export interface Team {
+  id: string
+  name: string
+  description: string
+  active: boolean
+  created_at: string
+}
+
 export type MeetingStatus = "active" | "ended"
 export type MeetingLoopState = "idle" | "running" | "paused"
 
@@ -119,13 +128,14 @@ export interface MeetingMessage {
   created_at: string
 }
 
-export type MemoryScope = "workspace" | "agent" | "task"
+export type MemoryScope = "workspace" | "agent" | "team" | "task"
 export type MemoryType = "fact" | "decision" | "preference" | "lesson" | "task_summary" | "project_context" | "convention" | "architecture"
 
 export interface MemoryRecord {
   id: string
   scope: MemoryScope
   agent_id: string | null
+  team_id: string | null
   task_id: string | null
   type: MemoryType
   content: string

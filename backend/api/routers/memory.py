@@ -6,8 +6,9 @@ from pydantic import BaseModel
 from deps import get_db
 from events.bus import bus
 from events.schema import MEMORY_CREATED
-from lookups import get_or_404
+from lookups import get_active_or_404, get_or_404
 from models.memory import MemoryProposal, MemoryRecord, MemoryScope, MemoryType
+from models.team import Team
 from serialization import serialize
 from services.memory_consolidation_service import (
     apply_proposal,
@@ -18,6 +19,7 @@ from services.memory_service import (
     archive_memory,
     create_human_memory,
     list_agent_memories,
+    list_team_memories,
     list_workspace_memories,
     pin_memory,
     promote_memory_to_workspace,
@@ -33,6 +35,7 @@ class CreateMemoryBody(BaseModel):
     type: MemoryType
     agent_id: uuid.UUID | None = None
     task_id: uuid.UUID | None = None
+    team_id: uuid.UUID | None = None
 
 
 @router.get("/workspace")
@@ -52,9 +55,17 @@ async def list_agent_memories_route(agent_id: uuid.UUID, db=Depends(get_db)):
     return [serialize_memory(record) for record in await list_agent_memories(db, agent_id)]
 
 
+@router.get("/teams/{team_id}")
+async def list_team_memories_route(team_id: uuid.UUID, db=Depends(get_db)):
+    await get_or_404(db, Team, team_id, "team")
+    return [serialize_memory(record) for record in await list_team_memories(db, team_id)]
+
+
 @router.post("", status_code=201)
 async def create_memory_route(body: CreateMemoryBody, db=Depends(get_db)):
-    record = await create_human_memory(db, body.scope, body.content, body.type, body.agent_id, body.task_id)
+    if body.team_id is not None:
+        await get_active_or_404(db, Team, body.team_id, "team")
+    record = await create_human_memory(db, body.scope, body.content, body.type, body.agent_id, body.task_id, body.team_id)
     bus.publish(MEMORY_CREATED, serialize_memory(record))
     return serialize_memory(record)
 

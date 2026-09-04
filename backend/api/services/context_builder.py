@@ -71,7 +71,7 @@ MEMORY_CHAR_BUDGET = 4000
 
 async def render_memory(db, agent: Agent, task: Task) -> str:
     """Recalled memory can itself be agent-written (README 32.2's source_type=agent): frame it as data to weigh, not as instructions to follow, so a poisoned past memory can't smuggle in a new directive."""
-    memories = await retrieve_context_memories(db, agent.id, build_query_text(task), task_id=task.id)
+    memories = await retrieve_context_memories(db, agent.id, build_query_text(task), task_id=task.id, team_id=agent.team_id)
     lines = truncate_memory_lines(memories, MEMORY_CHAR_BUDGET)
     if not lines:
         return ""

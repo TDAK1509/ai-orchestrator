@@ -28,6 +28,18 @@ The interface should make it easy to:
 
 Behind the interface, the system must run real Claude Code processes in isolated git worktrees, survive a crash or a restart, and land finished work on a branch. Section 19 defines that runtime. It is the part that must work first.
 
+## Running it
+
+1. `cp .env.example .env`.
+2. `make install` — once per checkout. Creates `.venv`, installs the backend and frontend dependencies.
+3. `make start` — brings up Postgres, then the backend and the frontend together.
+
+`make start` waits for Postgres to report healthy, then runs migrations automatically before the backend starts. Set `AGENT_OFFICE_AUTO_MIGRATE=0` in `.env` to skip that and manage migrations yourself with `make migrate`.
+
+The first `make start` is slow: the backend downloads its embedding model (~50MB) before it serves its first request. That is expected, not a hang.
+
+`make stop` and `make clean` only touch the database (`clean` also deletes its volume). Stop the backend and frontend with Ctrl-C on the terminal running `make start`.
+
 ---
 
 # 1. Main Layout

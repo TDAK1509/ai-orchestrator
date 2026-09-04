@@ -1,0 +1,22 @@
+# Pin the project name. Without it Compose derives it from the compose file's
+# directory -- every repo on this machine with a devops/ directory would then
+# share one project, one network and one pgdata volume.
+name: ${COMPOSE_PROJECT_NAME:-agent-office}
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: agent_office
+      POSTGRES_USER: agent_office
+      POSTGRES_PASSWORD: agent_office
+    # allow-comment: bound to 127.0.0.1 -- an unqualified host port publishes on every interface, so this dev database (fixed username/password) would otherwise be reachable from the network, not just this machine.
+    ports: ["127.0.0.1:5433:5432"]
+    volumes: ["agent_office_pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent_office -d agent_office"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+volumes:
+  agent_office_pgdata:

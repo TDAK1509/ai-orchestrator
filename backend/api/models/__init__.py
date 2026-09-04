@@ -28,6 +28,7 @@ from .room import Room, RoomType
 from .session import AgentSession, BoundVia, ExecutionRun, RunStatus
 from .skill import AgentSkillAssignment, Skill
 from .task import Task, TaskPriority, TaskStatus
+from .team import Team
 from .worktree import TaskWorktree, WorktreeStatus
 
 __all__ = [
@@ -70,5 +71,6 @@ __all__ = [
     "TaskPriority",
     "TaskStatus",
     "TaskWorktree",
+    "Team",
     "WorktreeStatus",
 ]

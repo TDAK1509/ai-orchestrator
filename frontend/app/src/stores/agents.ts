@@ -14,8 +14,8 @@ export const useAgentsStore = defineStore("agents", {
     async fetchAgents() {
       this.agents = await api.get<Agent[]>("/agents")
     },
-    async hireAgent(name: string, role: string, instructions: string) {
-      const agent = await api.post<Agent>("/agents", { name, role, instructions })
+    async hireAgent(name: string, role: string, instructions: string, teamId: string | null = null) {
+      const agent = await api.post<Agent>("/agents", { name, role, instructions, team_id: teamId })
       this.upsert(agent)
       return agent
     },
