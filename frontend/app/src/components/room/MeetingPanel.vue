@@ -3,6 +3,7 @@ import { onMounted, ref } from "vue"
 import type { Meeting } from "../../api/types"
 import { useAgentsStore } from "../../stores/agents"
 import { useMeetingsStore } from "../../stores/meetings"
+import MeetingOutcomeList from "./MeetingOutcomeList.vue"
 
 const props = defineProps<{ meeting: Meeting; participantIds: string[] }>()
 
@@ -10,10 +11,13 @@ const meetings = useMeetingsStore()
 const agents = useAgentsStore()
 const draft = ref("")
 const summaryDraft = ref("")
+const decisionsDraft = ref("")
+const actionItemsDraft = ref("")
+const unresolvedDraft = ref("")
 const speakerId = ref(props.participantIds[0] ?? "")
 
 onMounted(() => {
-  meetings.fetchMessages(props.meeting.id)
+  if (props.meeting.status === "active") meetings.fetchMessages(props.meeting.id)
 })
 
 function messages() {
@@ -30,9 +34,18 @@ async function post(): Promise<void> {
   draft.value = ""
 }
 
+function splitLines(value: string): string[] {
+  return value.split("\n").map((line) => line.trim()).filter(Boolean)
+}
+
 async function end(): Promise<void> {
   if (!summaryDraft.value) return
-  await meetings.endMeeting(props.meeting.id, summaryDraft.value)
+  await meetings.endMeeting(props.meeting.id, {
+    summary: summaryDraft.value,
+    decisions: splitLines(decisionsDraft.value),
+    action_items: splitLines(actionItemsDraft.value),
+    unresolved_questions: splitLines(unresolvedDraft.value),
+  })
 }
 </script>
 
@@ -50,11 +63,19 @@ async function end(): Promise<void> {
         <input v-model="draft" class="flex-1 rounded border border-gray-300 px-2 py-1 text-sm" placeholder="Message..." />
         <button class="rounded bg-gray-100 px-2 py-1 text-sm" @click="post">Send</button>
       </div>
-      <div class="mt-2 flex gap-2">
-        <input v-model="summaryDraft" class="flex-1 rounded border border-gray-300 px-2 py-1 text-sm" placeholder="Summary to end the meeting..." />
-        <button class="rounded bg-red-600 px-2 py-1 text-sm text-white" @click="end">End Meeting</button>
+      <div class="mt-3 flex flex-col gap-1">
+        <input v-model="summaryDraft" class="rounded border border-gray-300 px-2 py-1 text-sm" placeholder="Summary to end the meeting..." />
+        <textarea v-model="decisionsDraft" class="rounded border border-gray-300 px-2 py-1 text-sm" rows="2" placeholder="Decisions, one per line" />
+        <textarea v-model="actionItemsDraft" class="rounded border border-gray-300 px-2 py-1 text-sm" rows="2" placeholder="Action items, one per line" />
+        <textarea v-model="unresolvedDraft" class="rounded border border-gray-300 px-2 py-1 text-sm" rows="2" placeholder="Unresolved questions, one per line" />
+        <button class="self-start rounded bg-red-600 px-2 py-1 text-sm text-white" @click="end">End Meeting</button>
       </div>
     </div>
-    <p v-else class="text-sm text-gray-600">{{ meeting.summary }}</p>
+    <div v-else class="text-sm text-gray-600">
+      <p>{{ meeting.summary }}</p>
+      <MeetingOutcomeList label="Decisions" :items="meeting.decisions" />
+      <MeetingOutcomeList label="Action items" :items="meeting.action_items" />
+      <MeetingOutcomeList label="Unresolved questions" :items="meeting.unresolved_questions" />
+    </div>
   </div>
 </template>

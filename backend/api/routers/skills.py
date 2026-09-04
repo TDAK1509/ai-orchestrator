@@ -15,6 +15,7 @@ from services.skill_service import (
     create_skill,
     delete_skill,
     edit_skill,
+    list_assigned_agents,
     list_skills,
     read_instructions,
     skill_dir,
@@ -60,6 +61,12 @@ async def edit_skill_route(skill_id: uuid.UUID, body: EditSkillBody, db=Depends(
     skill = await edit_skill(db, config_worktree, skill, body.name, body.description, body.instructions)
     bus.publish(SKILL_UPDATED, serialize(skill))
     return serialize_skill_with_instructions(skill, config_worktree)
+
+
+@router.get("/{skill_id}/agents")
+async def list_skill_agents_route(skill_id: uuid.UUID, db=Depends(get_db)):
+    await get_or_404(db, Skill, skill_id, "skill")
+    return [serialize(agent) for agent in await list_assigned_agents(db, skill_id)]
 
 
 @router.delete("/{skill_id}")

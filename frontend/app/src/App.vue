@@ -15,11 +15,21 @@ import MemoryView from "./views/MemoryView.vue"
 import { startRealtimeDispatch } from "./realtime/dispatch"
 import { useAgentsStore } from "./stores/agents"
 import { useAttentionStore } from "./stores/attention"
+import { useMcpStore } from "./stores/mcp"
+import { useMeetingsStore } from "./stores/meetings"
+import { useMemoryStore } from "./stores/memory"
+import { useRoomsStore } from "./stores/rooms"
+import { useSkillsStore } from "./stores/skills"
 import { useTasksStore } from "./stores/tasks"
 
 const agents = useAgentsStore()
 const tasks = useTasksStore()
 const attention = useAttentionStore()
+const skills = useSkillsStore()
+const mcp = useMcpStore()
+const memory = useMemoryStore()
+const rooms = useRoomsStore()
+const meetings = useMeetingsStore()
 
 const selectedAgent = ref<Agent | null>(null)
 const showCreateTask = ref(false)
@@ -38,7 +48,17 @@ onMounted(() => {
 })
 
 async function loadSnapshots(): Promise<void> {
-  await Promise.all([agents.fetchAgents(), tasks.fetchTasks(), attention.fetchPendingDecisions(), attention.fetchAttentionEvents()])
+  await Promise.all([
+    agents.fetchAgents(),
+    tasks.fetchTasks(),
+    attention.fetchPendingDecisions(),
+    attention.fetchAttentionEvents(),
+    skills.fetchSkills(),
+    mcp.fetchPool(),
+    memory.fetchWorkspaceMemories(),
+    rooms.fetchRooms(),
+    meetings.fetchMeetings(),
+  ])
 }
 
 function openAttentionEvent(event: AttentionEvent): void {

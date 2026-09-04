@@ -1,5 +1,5 @@
 import { defineStore } from "pinia"
-import { api } from "../api/client"
+import { api, pathSegment } from "../api/client"
 import type { AgentMcpPermission, McpServerRef } from "../api/types"
 
 export const useMcpStore = defineStore("mcp", {
@@ -16,15 +16,18 @@ export const useMcpStore = defineStore("mcp", {
       this.pool = await api.get<McpServerRef[]>("/mcp/pool")
     },
     async grant(agentId: string, serverName: string) {
-      await api.post(`/mcp/agents/${agentId}/grant`, { server_name: serverName })
+      await api.post(`/mcp/agents/${pathSegment(agentId)}/grant`, { server_name: serverName })
       await this.fetchAgentPermissions(agentId)
     },
     async revoke(agentId: string, serverName: string) {
-      await api.delete(`/mcp/agents/${agentId}/revoke/${serverName}`)
+      await api.delete(`/mcp/agents/${pathSegment(agentId)}/revoke/${pathSegment(serverName)}`)
       await this.fetchAgentPermissions(agentId)
     },
     async fetchAgentPermissions(agentId: string) {
-      this.permissionsByAgentId[agentId] = await api.get<AgentMcpPermission[]>(`/mcp/agents/${agentId}`)
+      this.permissionsByAgentId[agentId] = await api.get<AgentMcpPermission[]>(`/mcp/agents/${pathSegment(agentId)}`)
+    },
+    receivePermissionChange(agentId: string) {
+      if (agentId in this.permissionsByAgentId) this.fetchAgentPermissions(agentId)
     },
   },
 })

@@ -54,5 +54,5 @@ async def grant_mcp_access_route(agent_id: uuid.UUID, body: GrantMcpBody, db=Dep
 async def revoke_mcp_access_route(agent_id: uuid.UUID, server_name: str, db=Depends(get_db)):
     agent = await get_or_404(db, Agent, agent_id, "agent")
     await revoke_mcp_access(db, agent, server_name)
-    bus.publish(MCP_REVOKED, {"agentId": str(agent_id), "serverName": server_name})
+    bus.publish(MCP_REVOKED, {"agent_id": str(agent_id), "mcp_server_name": server_name})
     return {"revoked": True}
