@@ -7,7 +7,7 @@ from deps import get_db, get_runtime_service
 from events.bus import bus
 from events.schema import AGENT_CREATED, AGENT_FIRED
 from lookups import get_active_or_404, get_or_404
-from models.agent import Agent
+from models.agent import Agent, AgentEffort
 from models.team import Team
 from serialization import serialize
 from services.agent_service import (
@@ -26,12 +26,16 @@ class HireAgentBody(BaseModel):
     role: str
     instructions: str = ""
     team_id: uuid.UUID | None = None
+    model: str | None = None
+    effort: AgentEffort | None = None
 
 
 class EditAgentBody(BaseModel):
     name: str | None = None
     role: str | None = None
     instructions: str | None = None
+    model: str | None = None
+    effort: AgentEffort | None = None
 
 
 @router.get("")
@@ -43,7 +47,7 @@ async def list_agents_route(db=Depends(get_db)):
 async def hire_agent_route(body: HireAgentBody, db=Depends(get_db)):
     if body.team_id is not None:
         await get_active_or_404(db, Team, body.team_id, "team")
-    agent = await hire_agent(db, body.name, body.role, body.instructions, body.team_id)
+    agent = await hire_agent(db, body.name, body.role, body.instructions, body.team_id, body.model, body.effort)
     bus.publish(AGENT_CREATED, serialize(agent))
     return serialize(agent)
 
@@ -57,7 +61,7 @@ async def get_agent_route(agent_id: uuid.UUID, db=Depends(get_db)):
 @router.patch("/{agent_id}")
 async def edit_agent_route(agent_id: uuid.UUID, body: EditAgentBody, db=Depends(get_db)):
     agent = await get_or_404(db, Agent, agent_id, "agent")
-    agent = await edit_agent(db, agent, body.name, body.role, body.instructions)
+    agent = await edit_agent(db, agent, body, body.model_fields_set)
     return serialize(agent)
 
 

@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db import commit
 from events.bus import bus
 from events.schema import TASK_UPDATED
-from models.agent import Agent, AgentStatus
+from models.agent import Agent, AgentEffort, AgentStatus
 from models.session import AgentSession, ExecutionRun, RunStatus
 from models.task import Task, TaskStatus
 from runtime.runtime_service import RuntimeService
@@ -14,31 +14,51 @@ from serialization import serialize
 from services.memory_service import archive_memory, list_agent_memories
 from services.room_service import ensure_main_room
 
+# allow-comment: a model released after this tuple is written is rejected until someone edits it -- the alternative, accepting any string, trades that for an agent that silently runs on the CLI's own fallback when the value is a typo.
+SUPPORTED_MODELS = (
+    "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5", "claude-fable-5-1",
+    "opus", "sonnet", "haiku", "fable",
+)
 
-async def hire_agent(db: AsyncSession, name: str, role: str, instructions: str = "", team_id: uuid.UUID | None = None) -> Agent:
+
+async def hire_agent(
+    db: AsyncSession, name: str, role: str, instructions: str = "",
+    team_id: uuid.UUID | None = None, model: str | None = None, effort: AgentEffort | None = None,
+) -> Agent:
     """Rule 1 (README 23): there is always a Main Room, and every agent starts there."""
+    require_supported_model(model)
     main_room = await ensure_main_room(db)
-    agent = Agent(id=uuid.uuid4(), name=name, role=role, instructions=instructions, room_id=main_room.id, team_id=team_id)
+    agent = Agent(id=uuid.uuid4(), name=name, role=role, instructions=instructions, room_id=main_room.id, team_id=team_id, model=model, effort=effort)
     db.add(agent)
     await commit(db)
     return agent
 
 
-async def edit_agent(
-    db: AsyncSession, agent: Agent, name: str | None = None, role: str | None = None, instructions: str | None = None
-) -> Agent:
-    apply_agent_edits(agent, name, role, instructions)
+def require_supported_model(model: str | None) -> None:
+    if model is not None and model not in SUPPORTED_MODELS:
+        raise ValueError(f"unsupported model: {model!r}")
+
+
+async def edit_agent(db: AsyncSession, agent: Agent, body, fields_set: set[str]) -> Agent:
+    apply_agent_edits(agent, body, fields_set)
     await commit(db)
     return agent
 
 
-def apply_agent_edits(agent: Agent, name: str | None, role: str | None, instructions: str | None) -> None:
-    if name is not None:
-        agent.name = name
-    if role is not None:
-        agent.role = role
-    if instructions is not None:
-        agent.instructions = instructions
+def apply_agent_edits(agent: Agent, body, fields_set: set[str]) -> None:
+    reject_null_required_field(body, fields_set, "name")
+    reject_null_required_field(body, fields_set, "role")
+    reject_null_required_field(body, fields_set, "instructions")
+    if "model" in fields_set:
+        require_supported_model(body.model)
+    for field in ("name", "role", "instructions", "model", "effort"):
+        if field in fields_set:
+            setattr(agent, field, getattr(body, field))
+
+
+def reject_null_required_field(body, fields_set: set[str], field: str) -> None:
+    if field in fields_set and getattr(body, field) is None:
+        raise ValueError(f"{field} cannot be cleared to null")
 
 
 async def fire_agent(db: AsyncSession, runtime_service: RuntimeService, agent: Agent) -> Agent:

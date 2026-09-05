@@ -15,12 +15,24 @@ class AgentStatus(str, enum.Enum):
     BLOCKED = "blocked"
 
 
+class AgentEffort(str, enum.Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    XHIGH = "xhigh"
+    MAX = "max"
+
+
 class Agent(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "agents"
 
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     role: Mapped[str] = mapped_column(String(120), nullable=False)
     instructions: Mapped[str] = mapped_column(String, nullable=False, default="")
+
+    # allow-comment: NULL means "follow the workspace default" (RuntimeSettings), not "unset" -- an agent that never chose stays pinned to whatever the workspace default changes to.
+    model: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    effort: Mapped[AgentEffort | None] = mapped_column(Enum(AgentEffort, native_enum=False, length=10), nullable=True)
 
     status: Mapped[AgentStatus] = mapped_column(
         Enum(AgentStatus, native_enum=False, length=20),

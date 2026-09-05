@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue"
+import type { AgentEffort } from "../../api/types"
 import { useAgentsStore } from "../../stores/agents"
 import { useTeamsStore } from "../../stores/teams"
 
@@ -11,7 +12,12 @@ const name = ref("")
 const role = ref("")
 const instructions = ref("")
 const teamId = ref("")
+const model = ref("")
+const effort = ref<AgentEffort | "">("")
 const submitting = ref(false)
+
+const MODEL_OPTIONS = ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5", "claude-fable-5-1"]
+const EFFORT_OPTIONS = ["low", "medium", "high", "xhigh", "max"]
 
 onMounted(() => {
   if (!teams.teams.length) teams.fetchTeams()
@@ -25,7 +31,7 @@ async function submit(onDone: () => void): Promise<void> {
   if (!canSubmit()) return
   submitting.value = true
   try {
-    await agents.hireAgent(name.value, role.value, instructions.value, teamId.value || null)
+    await agents.hireAgent(name.value, role.value, instructions.value, teamId.value || null, model.value || null, effort.value || null)
     onDone()
   } finally {
     submitting.value = false
@@ -50,6 +56,16 @@ async function submit(onDone: () => void): Promise<void> {
       <select v-model="teamId" class="mt-1 w-full rounded border border-gray-300 px-2 py-1">
         <option value="">No team</option>
         <option v-for="team in teams.teams" :key="team.id" :value="team.id">{{ team.name }}</option>
+      </select>
+      <label class="mt-3 block text-sm font-medium">Model</label>
+      <select v-model="model" class="mt-1 w-full rounded border border-gray-300 px-2 py-1">
+        <option value="">Workspace default</option>
+        <option v-for="option in MODEL_OPTIONS" :key="option" :value="option">{{ option }}</option>
+      </select>
+      <label class="mt-3 block text-sm font-medium">Effort</label>
+      <select v-model="effort" class="mt-1 w-full rounded border border-gray-300 px-2 py-1">
+        <option value="">Workspace default</option>
+        <option v-for="option in EFFORT_OPTIONS" :key="option" :value="option">{{ option }}</option>
       </select>
       <div class="mt-4 flex justify-end gap-2">
         <button class="rounded border border-gray-300 px-3 py-1.5 text-sm" @click="$emit('close')">Cancel</button>

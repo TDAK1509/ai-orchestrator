@@ -14,12 +14,12 @@ export const useAgentsStore = defineStore("agents", {
     async fetchAgents() {
       this.agents = await api.get<Agent[]>("/agents")
     },
-    async hireAgent(name: string, role: string, instructions: string, teamId: string | null = null) {
-      const agent = await api.post<Agent>("/agents", { name, role, instructions, team_id: teamId })
+    async hireAgent(name: string, role: string, instructions: string, teamId: string | null = null, model: string | null = null, effort: Agent["effort"] = null) {
+      const agent = await api.post<Agent>("/agents", { name, role, instructions, team_id: teamId, model, effort })
       this.upsert(agent)
       return agent
     },
-    async editAgent(id: string, patch: Partial<Pick<Agent, "name" | "role" | "instructions">>) {
+    async editAgent(id: string, patch: Partial<Pick<Agent, "name" | "role" | "instructions" | "model" | "effort">>) {
       const agent = await api.patch<Agent>(`/agents/${id}`, patch)
       this.upsert(agent)
       return agent
