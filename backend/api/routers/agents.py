@@ -1,13 +1,15 @@
 import uuid
 
-from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+from sqlalchemy import select
 
 from deps import get_db, get_runtime_service
 from events.bus import bus
 from events.schema import AGENT_CREATED, AGENT_FIRED
 from lookups import get_active_or_404, get_or_404
 from models.agent import Agent, AgentEffort
+from models.skill import Skill
 from models.team import Team
 from serialization import serialize
 from services.agent_service import (
@@ -20,6 +22,9 @@ from services.agent_service import (
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
+# allow-comment: the catalog holds 12 skills today -- this cap keeps one hire request from issuing an unbounded number of skill lookups, not from ever matching the catalog's real size.
+MAX_HIRE_SKILL_IDS = 50
+
 
 class HireAgentBody(BaseModel):
     name: str
@@ -28,6 +33,7 @@ class HireAgentBody(BaseModel):
     team_id: uuid.UUID | None = None
     model: str | None = None
     effort: AgentEffort | None = None
+    skill_ids: list[uuid.UUID] = Field(default_factory=list, max_length=MAX_HIRE_SKILL_IDS)
 
 
 class EditAgentBody(BaseModel):
@@ -47,9 +53,24 @@ async def list_agents_route(db=Depends(get_db)):
 async def hire_agent_route(body: HireAgentBody, db=Depends(get_db)):
     if body.team_id is not None:
         await get_active_or_404(db, Team, body.team_id, "team")
-    agent = await hire_agent(db, body.name, body.role, body.instructions, body.team_id, body.model, body.effort)
+    skills = await load_skills(db, body.skill_ids)
+    agent = await hire_agent(db, body.name, body.role, body.instructions, body.team_id, body.model, body.effort, skills)
     bus.publish(AGENT_CREATED, serialize(agent))
     return serialize(agent)
+
+
+async def load_skills(db, skill_ids: list[uuid.UUID]) -> list[Skill]:
+    """One query for the whole list, not one per id -- a hire can name up to MAX_HIRE_SKILL_IDS of them."""
+    unique_ids = list(dict.fromkeys(skill_ids))
+    found = {skill.id: skill for skill in (await db.execute(select(Skill).where(Skill.id.in_(unique_ids)))).scalars()}
+    require_all_found(unique_ids, found)
+    return [found[skill_id] for skill_id in unique_ids]
+
+
+def require_all_found(skill_ids: list[uuid.UUID], found: dict[uuid.UUID, Skill]) -> None:
+    missing = [skill_id for skill_id in skill_ids if skill_id not in found]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"skill not found: {missing[0]}")
 
 
 @router.get("/{agent_id}")

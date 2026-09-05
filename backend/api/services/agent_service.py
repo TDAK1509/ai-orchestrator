@@ -8,11 +8,13 @@ from events.bus import bus
 from events.schema import TASK_UPDATED
 from models.agent import Agent, AgentEffort, AgentStatus
 from models.session import AgentSession, ExecutionRun, RunStatus
+from models.skill import Skill
 from models.task import Task, TaskStatus
 from runtime.runtime_service import RuntimeService
 from serialization import serialize
 from services.memory_service import archive_memory, list_agent_memories
 from services.room_service import ensure_main_room
+from services.skill_service import add_skill_assignments
 
 # allow-comment: a model released after this tuple is written is rejected until someone edits it -- the alternative, accepting any string, trades that for an agent that silently runs on the CLI's own fallback when the value is a typo.
 SUPPORTED_MODELS = (
@@ -24,13 +26,25 @@ SUPPORTED_MODELS = (
 async def hire_agent(
     db: AsyncSession, name: str, role: str, instructions: str = "",
     team_id: uuid.UUID | None = None, model: str | None = None, effort: AgentEffort | None = None,
+    skills: list[Skill] | None = None,
+) -> Agent:
+    """A hire and its initial skill assignments land in one commit, so a failure leaves neither."""
+    require_supported_model(model)
+    agent = await build_agent(db, name, role, instructions, team_id, model, effort)
+    if skills:
+        add_skill_assignments(db, agent.id, skills)
+    await commit(db)
+    return agent
+
+
+async def build_agent(
+    db: AsyncSession, name: str, role: str, instructions: str,
+    team_id: uuid.UUID | None, model: str | None, effort: AgentEffort | None,
 ) -> Agent:
     """Rule 1 (README 23): there is always a Main Room, and every agent starts there."""
-    require_supported_model(model)
     main_room = await ensure_main_room(db)
     agent = Agent(id=uuid.uuid4(), name=name, role=role, instructions=instructions, room_id=main_room.id, team_id=team_id, model=model, effort=effort)
     db.add(agent)
-    await commit(db)
     return agent
 
 

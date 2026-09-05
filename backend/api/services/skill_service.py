@@ -49,10 +49,25 @@ async def delete_skill_assignments(db, skill_id: uuid.UUID) -> None:
 
 
 async def assign_skill(db, agent: Agent, skill: Skill) -> AgentSkillAssignment:
-    assignment = AgentSkillAssignment(id=uuid.uuid4(), agent_id=agent.id, skill_id=skill.id)
-    db.add(assignment)
+    assignments = await assign_skills(db, agent, [skill])
+    return assignments[0]
+
+
+async def assign_skills(db, agent: Agent, skills: list[Skill]) -> list[AgentSkillAssignment]:
+    assignments = add_skill_assignments(db, agent.id, skills)
     await commit(db)
-    return assignment
+    return assignments
+
+
+def add_skill_assignments(db, agent_id: uuid.UUID, skills: list[Skill]) -> list[AgentSkillAssignment]:
+    """Non-committing so a hire can add these rows to the same unit of work as the agent it belongs to."""
+    assignments = [build_assignment(agent_id, skill.id) for skill in skills]
+    db.add_all(assignments)
+    return assignments
+
+
+def build_assignment(agent_id: uuid.UUID, skill_id: uuid.UUID) -> AgentSkillAssignment:
+    return AgentSkillAssignment(id=uuid.uuid4(), agent_id=agent_id, skill_id=skill_id)
 
 
 async def unassign_skill(db, agent: Agent, skill: Skill) -> None:
