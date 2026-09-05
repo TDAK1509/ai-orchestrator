@@ -29,11 +29,25 @@ PROGRESS_FLUSH_SECONDS = 10.0
 class RuntimeSettings:
     claude_binary: str = "claude"
     model: str = "claude-sonnet-5"
+    effort: str | None = None
     permission_mode: str = "acceptEdits"
     runtime_root: Path = field(default_factory=lambda: Path(".agent-office/runtime"))
     database_url: str | None = field(default_factory=lambda: os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL))
     # allow-comment: separate from database_url so a deployment can hand the agent-facing ask_human server a least-privilege role instead of the backend's own full-access connection string.
     ask_human_database_url: str | None = None
+
+
+@dataclass(frozen=True)
+class AgentRuntimePolicy:
+    """README 19.8: per-agent model and effort, resolved once at spawn -- a pinned agent overrides the workspace default, a NULL one follows it."""
+
+    model: str
+    effort: str | None
+
+
+def resolve_runtime_policy(agent: Agent, settings: RuntimeSettings) -> AgentRuntimePolicy:
+    effort = agent.effort.value if agent.effort else settings.effort
+    return AgentRuntimePolicy(model=agent.model or settings.model, effort=effort)
 
 
 @dataclass
@@ -102,10 +116,11 @@ class RuntimeService:
         await managed.send_line(payload)
 
     async def _start_run(self, db, agent, target: RunTarget, allowed_servers, resume_session, initial_message, env, keep_stdin_open) -> ExecutionRun:
+        policy = resolve_runtime_policy(agent, self.settings)
         agent_session, run = await self._open_session_and_run(db, agent, target, resume_session)
         internal_servers = self._build_internal_servers(agent, target, agent_session)
         mcp_config_path = write_mcp_config(self._run_dir(agent.id, run.id), allowed_servers, internal_servers)
-        await self._launch_process(db, agent_session, run, target, mcp_config_path, resume_session, initial_message, env, keep_stdin_open)
+        await self._launch_process(db, agent_session, run, target, mcp_config_path, resume_session, initial_message, env, keep_stdin_open, policy)
         return run
 
     def _build_internal_servers(self, agent: Agent, target: RunTarget, agent_session: AgentSession) -> dict[str, dict]:
@@ -138,8 +153,8 @@ class RuntimeService:
         """C4: a meeting has no commit history to read -- HEAD in repo_root would belong to whatever task last landed there, not to this session."""
         return await worktree.read_head_commit(target.cwd) if target.task_worktree else None
 
-    async def _launch_process(self, db, agent_session, run, target: RunTarget, mcp_config_path, resume_session, initial_message, env, keep_stdin_open) -> None:
-        managed = await self._spawn_process(agent_session.agent_id, run.id, target, mcp_config_path, resume_session, env)
+    async def _launch_process(self, db, agent_session, run, target: RunTarget, mcp_config_path, resume_session, initial_message, env, keep_stdin_open, policy: AgentRuntimePolicy) -> None:
+        managed = await self._spawn_process(agent_session.agent_id, run.id, target, mcp_config_path, resume_session, env, policy)
         run.pid = managed.pid
         agent_session.approx_chars += len(str(initial_message))
         await db_commit(db)
@@ -171,23 +186,23 @@ class RuntimeService:
         return run
 
     async def _spawn_process(
-        self, agent_id: uuid.UUID, run_id: uuid.UUID, target: RunTarget, mcp_config_path: Path, resume_session: AgentSession | None, env: dict[str, str] | None
+        self, agent_id: uuid.UUID, run_id: uuid.UUID, target: RunTarget, mcp_config_path: Path, resume_session: AgentSession | None, env: dict[str, str] | None, policy: AgentRuntimePolicy
     ) -> process.OwnedProcess:
-        command = self._build_command(mcp_config_path, resume_session, target)
+        command = self._build_command(mcp_config_path, resume_session, target, policy)
         run_directory = self._run_dir(agent_id, run_id)
         return await process.spawn(command, cwd=target.cwd, run_directory=run_directory, env=env)
 
     def _run_dir(self, agent_id: uuid.UUID, run_id: uuid.UUID) -> Path:
         return process.run_dir(self.settings.runtime_root, agent_id, run_id)
 
-    def _build_command(self, mcp_config_path: Path, resume_session: AgentSession | None, target: RunTarget) -> list[str]:
-        command = self._base_command_args(mcp_config_path, target)
+    def _build_command(self, mcp_config_path: Path, resume_session: AgentSession | None, target: RunTarget, policy: AgentRuntimePolicy) -> list[str]:
+        command = self._base_command_args(mcp_config_path, target, policy)
         if resume_session and resume_session.claude_session_id:
             command += ["--resume", resume_session.claude_session_id]
         return command
 
-    def _base_command_args(self, mcp_config_path: Path, target: RunTarget) -> list[str]:
-        return self._streaming_flags() + self._session_flags(mcp_config_path, target)
+    def _base_command_args(self, mcp_config_path: Path, target: RunTarget, policy: AgentRuntimePolicy) -> list[str]:
+        return self._streaming_flags() + self._session_flags(mcp_config_path, target, policy)
 
     def _streaming_flags(self) -> list[str]:
         return [
@@ -199,17 +214,17 @@ class RuntimeService:
             "--verbose",
         ]
 
-    def _session_flags(self, mcp_config_path: Path, target: RunTarget) -> list[str]:
+    def _session_flags(self, mcp_config_path: Path, target: RunTarget, policy: AgentRuntimePolicy) -> list[str]:
         """C5: a meeting turn gets its own permission mode and an explicit tool disallow-list -- --disallowed-tools alone is not a boundary, since _build_internal_servers still injects MCP servers regardless, but it narrows the surface a catalog server's own tools could still reach."""
         flags = [
-            "--model", self.settings.model,
+            "--model", policy.model,
             "--permission-mode", "plan" if target.meeting else self.settings.permission_mode,
             "--mcp-config", str(mcp_config_path),
             "--strict-mcp-config",
         ]
-        if target.meeting:
-            flags += ["--disallowed-tools", "Edit,Write,Bash"]
-        return flags
+        if policy.effort:
+            flags += ["--effort", policy.effort]
+        return flags + (["--disallowed-tools", "Edit,Write,Bash"] if target.meeting else [])
 
     async def stream_events(self, run_id: uuid.UUID) -> AsyncIterator[DomainEvent]:
         """Owns one session for the run's whole life (README 31.1): this is the one worker allowed to write these rows, and it never shares that session with spawn() or another run's stream."""

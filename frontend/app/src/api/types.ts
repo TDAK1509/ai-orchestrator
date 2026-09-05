@@ -1,10 +1,13 @@
 export type AgentStatus = "idle" | "queued" | "working" | "blocked"
+export type AgentEffort = "low" | "medium" | "high" | "xhigh" | "max"
 
 export interface Agent {
   id: string
   name: string
   role: string
   instructions: string
+  model: string | null
+  effort: AgentEffort | null
   status: AgentStatus
   needs_attention: boolean
   active: boolean

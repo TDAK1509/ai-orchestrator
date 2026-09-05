@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue"
-import type { Agent } from "../../api/types"
+import type { Agent, AgentEffort } from "../../api/types"
 import { useActivityStore } from "../../stores/activity"
 import { useAgentsStore } from "../../stores/agents"
 import { useAttentionStore } from "../../stores/attention"
@@ -33,6 +33,29 @@ onMounted(() => {
 async function confirmFire(): Promise<void> {
   await agentsStore.fireAgent(props.agent.id)
   confirmingFire.value = false
+}
+
+const MODEL_OPTIONS = ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5", "claude-fable-5-1"]
+const EFFORT_OPTIONS = ["low", "medium", "high", "xhigh", "max"]
+const editingRuntime = ref(false)
+const modelDraft = ref("")
+const effortDraft = ref<AgentEffort | "">("")
+const savingRuntime = ref(false)
+
+function startEditingRuntime(): void {
+  modelDraft.value = props.agent.model ?? ""
+  effortDraft.value = props.agent.effort ?? ""
+  editingRuntime.value = true
+}
+
+async function saveRuntime(): Promise<void> {
+  savingRuntime.value = true
+  try {
+    await agentsStore.editAgent(props.agent.id, { model: modelDraft.value || null, effort: effortDraft.value || null })
+    editingRuntime.value = false
+  } finally {
+    savingRuntime.value = false
+  }
 }
 </script>
 
@@ -76,6 +99,29 @@ async function confirmFire(): Promise<void> {
 
     <div class="mt-6 border-t border-gray-100 pt-4">
       <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-400">Agent Settings</h3>
+
+      <div v-if="!editingRuntime" class="mt-2 flex items-center justify-between text-sm text-gray-600">
+        <span>Model: {{ agent.model ?? "Workspace default" }} · Effort: {{ agent.effort ?? "Workspace default" }}</span>
+        <button class="text-blue-600" @click="startEditingRuntime">Edit</button>
+      </div>
+      <div v-else class="mt-2 rounded border border-gray-200 p-2">
+        <label class="block text-xs font-medium text-gray-500">Model</label>
+        <select v-model="modelDraft" class="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-sm">
+          <option value="">Workspace default</option>
+          <option v-for="option in MODEL_OPTIONS" :key="option" :value="option">{{ option }}</option>
+        </select>
+        <label class="mt-2 block text-xs font-medium text-gray-500">Effort</label>
+        <select v-model="effortDraft" class="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-sm">
+          <option value="">Workspace default</option>
+          <option v-for="option in EFFORT_OPTIONS" :key="option" :value="option">{{ option }}</option>
+        </select>
+        <p class="mt-2 text-xs text-gray-400">Applies to this agent's next run, not one already in progress.</p>
+        <div class="mt-2 flex gap-2">
+          <button class="rounded bg-blue-600 px-2 py-1 text-sm text-white disabled:opacity-50" :disabled="savingRuntime" @click="saveRuntime">Save</button>
+          <button class="rounded border border-gray-300 px-2 py-1 text-sm" @click="editingRuntime = false">Cancel</button>
+        </div>
+      </div>
+
       <button v-if="!confirmingFire" class="mt-2 text-sm text-red-600" @click="confirmingFire = true">Fire Agent</button>
       <div v-else class="mt-2 rounded border border-red-200 bg-red-50 p-2 text-sm">
         <p>Fire {{ agent.name }}? Unfinished work returns to Backlog.</p>

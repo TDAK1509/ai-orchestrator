@@ -77,6 +77,8 @@ def build_runtime_settings_from_env() -> RuntimeSettings:
         settings.claude_binary = claude_binary
     if runtime_root := os.environ.get("AGENT_OFFICE_RUNTIME_ROOT"):
         settings.runtime_root = Path(runtime_root)
+    if effort := os.environ.get("AGENT_OFFICE_DEFAULT_EFFORT"):
+        settings.effort = effort
     return settings
 
 
