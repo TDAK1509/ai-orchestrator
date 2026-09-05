@@ -1,7 +1,8 @@
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
 from deps import get_db, get_runtime_service
 from events.bus import bus
@@ -59,8 +60,17 @@ async def hire_agent_route(body: HireAgentBody, db=Depends(get_db)):
 
 
 async def load_skills(db, skill_ids: list[uuid.UUID]) -> list[Skill]:
+    """One query for the whole list, not one per id -- a hire can name up to MAX_HIRE_SKILL_IDS of them."""
     unique_ids = list(dict.fromkeys(skill_ids))
-    return [await get_or_404(db, Skill, skill_id, "skill") for skill_id in unique_ids]
+    found = {skill.id: skill for skill in (await db.execute(select(Skill).where(Skill.id.in_(unique_ids)))).scalars()}
+    require_all_found(unique_ids, found)
+    return [found[skill_id] for skill_id in unique_ids]
+
+
+def require_all_found(skill_ids: list[uuid.UUID], found: dict[uuid.UUID, Skill]) -> None:
+    missing = [skill_id for skill_id in skill_ids if skill_id not in found]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"skill not found: {missing[0]}")
 
 
 @router.get("/{agent_id}")
