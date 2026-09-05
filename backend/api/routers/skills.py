@@ -10,6 +10,11 @@ from lookups import get_or_404
 from models.agent import Agent
 from models.skill import Skill
 from serialization import serialize
+from services.skill_import_service import (
+    ImportSummary,
+    claude_code_skills_dir,
+    import_claude_code_skills,
+)
 from services.skill_service import (
     assign_skill,
     create_skill,
@@ -38,6 +43,16 @@ class EditSkillBody(BaseModel):
 @router.get("")
 async def list_skills_route(db=Depends(get_db)):
     return [serialize(skill) for skill in await list_skills(db)]
+
+
+@router.post("/import")
+async def import_skills_route(db=Depends(get_db)):
+    summary = await import_claude_code_skills(db, claude_code_skills_dir())
+    return serialize_import_summary(summary)
+
+
+def serialize_import_summary(summary: ImportSummary) -> dict:
+    return {"created": summary.created, "updated": summary.updated, "skipped": summary.skipped, "errors": summary.errors}
 
 
 @router.get("/{skill_id}")

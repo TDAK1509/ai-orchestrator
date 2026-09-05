@@ -13,7 +13,7 @@ The interface should make it easy to:
 - Create meetings with selected agents.
 - Hire/create a new agent.
 - Fire/remove an agent safely.
-- Maintain a repository-backed global **Skill Catalog** from the UI.
+- Maintain a global **Skill Catalog** from the UI, synced from Claude Code's own skill directory.
 - Assign selected skills from that catalog to each agent.
 - Control which MCP servers each agent is allowed to use. MCP servers themselves are configured in the terminal.
 - Maintain private persistent memory for each agent.
@@ -1022,35 +1022,29 @@ unless the user explicitly chooses permanent deletion.
 
 # 15. Global Skill Catalog
 
-Skills are reusable instruction/capability packages. There is one global catalog for the workspace/app. Agents receive references to selected skills from this catalog.
+Skills are reusable instruction/capability packages. There is one global catalog for the workspace/app. Agents receive references to selected skills from this catalog. Every skill is a row in the `skills` table — there is no repository directory backing any of them.
 
 There are two sources of authorship, one table, one read path:
 
-- **Global skills** are authored as files in the `ai-orchestrator` repository itself, in a top-level `skills/` directory, and are versioned by normal commits. They are read-only from the web UI.
-- **Custom skills** are created in the web UI and stored entirely in the database. They have no file on disk.
+- **Imported skills** are pulled from Claude Code's own skill directory (`~/.claude/skills`, or `AGENT_OFFICE_CLAUDE_SKILLS_DIR` to override) by the "Sync from Claude Code" button. The import reads that directory; it never writes back to it.
+- **Custom skills** are created in the web UI and stored entirely in the database.
 
-## Global skill layout
+Both sources are fully editable and deletable from the web UI. Editing an imported skill is not permanent: the next sync overwrites it with whatever `~/.claude/skills` holds for that slug.
 
-```text
-skills/
-  backend-development/
-    SKILL.md
-    metadata.json
+## Importing from Claude Code
 
-  ui-design/
-    SKILL.md
-    metadata.json
+`POST /skills/import` scans every subdirectory of the Claude Code skills directory that contains a `SKILL.md`, following symlinks — the directory is almost entirely symlinks into a separate checkout, and it is the user's own trusted Claude Code configuration, not a repository directory a stray link could escape. Name and description come from the file's YAML front matter, which is then stripped before the body is stored as `instructions`.
 
-  testing/
-    SKILL.md
-    metadata.json
-```
+Re-running the import (the same button, any time later):
 
-`metadata.json` is optional: `{"name": "...", "description": "..."}`. When absent, the directory name is used as the name.
+| On re-import | Result |
+|---|---|
+| Slug is new | A new row is created, `source = "imported"` |
+| Slug exists, `source = "imported"` | Name, description and instructions are overwritten |
+| Slug exists, `source = "custom"` | Left untouched; reported as skipped |
+| Slug is gone from disk | The existing row is kept, whether or not an agent is assigned it |
 
-At backend startup, every subdirectory containing a `SKILL.md` is mirrored into the `skills` database table as a row with `source = "global"`, unless its slug already belongs to a custom skill — that collision is logged and the global skill is skipped, not raised, so a naming clash cannot stop the backend from starting. Editing `SKILL.md` or `metadata.json` needs a backend restart to take effect — nothing reads the filesystem outside that startup sync. A global row whose directory disappears is deleted only if no agent is assigned it; an assigned row keeps serving its last-known instructions.
-
-The web UI can assign a global skill to an agent and inspect its instructions, but cannot edit or delete it.
+The route returns `{created, updated, skipped, errors}` (slugs, plus any per-file read error), and the UI shows it after the sync runs. Removing a skill the user no longer wants is an explicit delete from the row, not something that happens by a directory going away.
 
 ## Skills View
 
@@ -1082,7 +1076,7 @@ The web UI can assign a global skill to an agent and inspect its instructions, b
 
 ## Add / Edit Skill
 
-A custom skill's dialog is fully editable:
+Every skill's dialog is fully editable, whatever its source:
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
@@ -1104,17 +1098,16 @@ A custom skill's dialog is fully editable:
 └──────────────────────────────────────────────────────────────┘
 ```
 
-A global skill's dialog is read-only: no Name/Description/Instructions field
-is editable, and there is no Delete Skill button. It shows its repository
-path (`skills/backend-development/`) instead, as a pointer to where it is
-defined.
+An imported skill's edits stick until the next "Sync from Claude Code" —
+that button overwrites it with whatever the file on disk holds for the slug.
 
 Users can:
 
 - create a custom skill
-- edit or delete a custom skill
-- assign/unassign any skill (global or custom) to agents
+- edit or delete any skill (imported or custom)
+- assign/unassign any skill to agents
 - inspect which agents currently use a skill
+- sync the catalog from Claude Code's own skill directory
 
 Deleting a skill that is assigned to agents must show the affected agents before confirmation.
 
@@ -1127,8 +1120,7 @@ interface Skill {
   name: string
   description?: string
 
-  source: "global" | "custom"
-  repositoryPath: string | null
+  source: "imported" | "custom"
   instructions: string
 
   createdAt: string
@@ -2151,7 +2143,7 @@ Create explicit attention events so they can be:
 
 ### Rule 9 — Skills are global; assignments are per agent
 
-A skill exists once in the repository-backed catalog.
+A skill exists once in the database-backed catalog.
 
 ```text
 Skill Catalog

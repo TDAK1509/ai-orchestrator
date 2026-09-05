@@ -9,12 +9,12 @@ from .base import GUID, Base, TimestampMixin, UUIDPrimaryKeyMixin, utcnow
 
 
 class SkillSource(str, enum.Enum):
-    GLOBAL = "global"
+    IMPORTED = "imported"
     CUSTOM = "custom"
 
 
 class Skill(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """A queryable index of the Skill Catalog (README 15): a GLOBAL row mirrors this repository's skills/ directory, a CUSTOM row is authored in the UI and owns its own instructions."""
+    """A queryable index of the Skill Catalog (README 15): an IMPORTED row is pulled from Claude Code's own skill directory and may be overwritten by the next import, a CUSTOM row is authored in the UI and owns its own instructions."""
 
     __tablename__ = "skills"
 

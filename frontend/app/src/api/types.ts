@@ -87,7 +87,14 @@ export interface AttentionEvent {
   resolved_at: string | null
 }
 
-export type SkillSource = "global" | "custom"
+export type SkillSource = "imported" | "custom"
+
+export interface SkillImportSummary {
+  created: string[]
+  updated: string[]
+  skipped: string[]
+  errors: string[]
+}
 
 export interface Skill {
   id: string
