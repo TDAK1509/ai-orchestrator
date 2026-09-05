@@ -18,6 +18,7 @@ from services.agent_service import (
     hire_agent,
     list_agents,
     restore_agent,
+    stop_agent,
 )
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -99,3 +100,11 @@ async def restore_agent_route(agent_id: uuid.UUID, db=Depends(get_db)):
     agent = await get_or_404(db, Agent, agent_id, "agent")
     agent = await restore_agent(db, agent)
     return serialize(agent)
+
+
+@router.post("/{agent_id}/stop")
+async def stop_agent_route(agent_id: uuid.UUID, db=Depends(get_db), runtime_service=Depends(get_runtime_service)):
+    """B2: Esc in the sheet -- interrupts the current run by killing it (README 19's "Stop", not a soft turn-interrupt)."""
+    agent = await get_or_404(db, Agent, agent_id, "agent")
+    run = await stop_agent(db, runtime_service, agent)
+    return {"stopped": run is not None}

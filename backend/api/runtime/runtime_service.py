@@ -331,16 +331,18 @@ class RuntimeService:
         return bool(result.scalar_one())
 
     async def kill_run(self, run_id: uuid.UUID) -> None:
-        await self._mark_kill_requested(run_id)
-        managed = self._processes.get(run_id)
-        if managed is not None:
-            await managed.terminate()
+        """B2: must also reach a run this backend adopted after a restart -- self._processes only holds runs it spawned itself, so a bare dict lookup silently no-ops against an adopted one and the process it's still writing to (codex P1)."""
+        run, agent_id = await self._mark_kill_requested(run_id)
+        managed = self.resolve_process(agent_id, run)
+        await managed.terminate()
 
-    async def _mark_kill_requested(self, run_id: uuid.UUID) -> None:
+    async def _mark_kill_requested(self, run_id: uuid.UUID) -> tuple[ExecutionRun, uuid.UUID]:
         async with self.session_factory() as db:
             run = await db.get(ExecutionRun, run_id)
             run.kill_requested = True
+            agent_session = await db.get(AgentSession, run.agent_session_id)
             await db_commit(db)
+            return run, agent_session.agent_id
 
 
 def require_resumable_session(agent: Agent, agent_session: AgentSession, task_worktree: TaskWorktree | None) -> None:

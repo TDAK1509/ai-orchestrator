@@ -19,6 +19,7 @@ from models import (  # noqa: F401
     meeting,
     memory,
     merge,
+    repository,
     room,
     session,
     skill,
