@@ -38,8 +38,15 @@ export const useSkillsStore = defineStore("skills", {
     },
     async importFromClaudeCode(slugs?: string[]): Promise<SkillImportSummary> {
       const summary = await api.post<SkillImportSummary>("/skills/import", slugs ? { slugs } : undefined)
-      this.skills = await api.get<Skill[]>("/skills")
+      await this.refreshSkillsBestEffort()
       return summary
+    },
+    async refreshSkillsBestEffort() {
+      try {
+        this.skills = await api.get<Skill[]>("/skills")
+      } catch {
+        return
+      }
     },
     async assignToAgent(skillId: string, agentId: string) {
       await api.post(`/skills/${pathSegment(skillId)}/assign/${pathSegment(agentId)}`)

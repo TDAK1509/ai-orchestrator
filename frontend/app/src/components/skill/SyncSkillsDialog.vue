@@ -15,9 +15,14 @@ const syncing = ref(false)
 const error = ref("")
 
 onMounted(async () => {
-  entries.value = await skills.fetchAvailableSkills()
-  ticked.value = new Set(entries.value.filter((entry) => entry.in_catalog).map((entry) => entry.slug))
-  loading.value = false
+  try {
+    entries.value = await skills.fetchAvailableSkills()
+    ticked.value = new Set(entries.value.filter((entry) => entry.in_catalog).map((entry) => entry.slug))
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : "Could not load the skill list"
+  } finally {
+    loading.value = false
+  }
 })
 
 function toggle(slug: string): void {
@@ -38,17 +43,46 @@ function findRemovedEntries(): SkillAvailableEntry[] {
 }
 
 async function startSync(): Promise<void> {
+  error.value = ""
+  try {
+    await refreshBeforeSync()
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : "Could not refresh the skill list, try again"
+    return
+  }
   const removed = findRemovedEntries()
   if (removed.length === 0) {
     await runSync()
     return
   }
-  removalWarnings.value = await Promise.all(removed.map((entry) => buildRemovalWarning(entry)))
+  await buildRemovalWarningsOrFail(removed)
+}
+
+async function refreshBeforeSync(): Promise<void> {
+  const [freshEntries] = await Promise.all([skills.fetchAvailableSkills(), skills.fetchSkills()])
+  preserveNewlyAppearedSkills(freshEntries)
+  entries.value = freshEntries
+}
+
+function preserveNewlyAppearedSkills(freshEntries: SkillAvailableEntry[]): void {
+  const seenSlugs = new Set(entries.value.map((entry) => entry.slug))
+  for (const entry of freshEntries) {
+    if (entry.in_catalog && !seenSlugs.has(entry.slug)) ticked.value.add(entry.slug)
+  }
+}
+
+async function buildRemovalWarningsOrFail(removed: SkillAvailableEntry[]): Promise<void> {
+  try {
+    removalWarnings.value = await Promise.all(removed.map((entry) => buildRemovalWarning(entry)))
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : "Could not check who is assigned to these skills, try again"
+  }
 }
 
 async function buildRemovalWarning(entry: SkillAvailableEntry) {
   const skill = findImportedSkillBySlug(entry.slug)
-  const agents = skill ? await skills.fetchAssignedAgents(skill.id) : []
+  if (!skill) throw new Error(`${entry.name}: could not verify its assignments`)
+  const agents = await skills.fetchAssignedAgents(skill.id)
   return { slug: entry.slug, name: entry.name, agentNames: agents.map((agent) => agent.name) }
 }
 

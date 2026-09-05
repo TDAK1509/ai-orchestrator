@@ -1033,18 +1033,24 @@ Both sources are fully editable and deletable from the web UI. Editing an import
 
 ## Importing from Claude Code
 
-`POST /skills/import` scans every subdirectory of the Claude Code skills directory that contains a `SKILL.md`, following symlinks — the directory is almost entirely symlinks into a separate checkout, and it is the user's own trusted Claude Code configuration, not a repository directory a stray link could escape. Name and description come from the file's YAML front matter, which is then stripped before the body is stored as `instructions`.
+`GET /skills/available` lists every skill under the Claude Code skills directory by slug and name only — no instructions, no file contents — alongside every already-imported skill, so a directory that has since vanished still appears (`on_disk: false`) instead of becoming unremovable through this screen. `CUSTOM` skills never appear here; they were never in this directory to begin with.
 
-Re-running the import (the same button, any time later):
+"Sync from Claude Code" opens this list as a checkbox picker, pre-ticked for whatever is already in the catalog. `POST /skills/import` then takes an optional `{"slugs": [...]}`:
 
-| On re-import | Result |
-|---|---|
-| Slug is new | A new row is created, `source = "imported"` |
-| Slug exists, `source = "imported"` | Name, description and instructions are overwritten |
-| Slug exists, `source = "custom"` | Left untouched; reported as skipped |
-| Slug is gone from disk | The existing row is kept, whether or not an agent is assigned it |
+| Slug is | In catalog | Result |
+|---|---|---|
+| ticked | no | a new row is created, `source = "imported"` |
+| ticked | yes, `source = "imported"` | name, description and instructions are overwritten |
+| ticked | yes, `source = "custom"` | left untouched; reported as skipped |
+| unticked | yes, `source = "imported"` | **the row is deleted, along with every agent's assignment to it** |
+| unticked | yes, `source = "custom"` | left untouched — a custom skill is never removed by sync |
+| ticked | not found on disk | reported as an error; no row is created or changed |
 
-The route returns `{created, updated, skipped, errors}` (slugs, plus any per-file read error), and the UI shows it after the sync runs. Removing a skill the user no longer wants is an explicit delete from the row, not something that happens by a directory going away.
+An absent `slugs` key means "every skill currently on disk" — the original, no-removal behaviour — so any direct `POST /skills/import` call keeps working unchanged. Symlinks in the directory are followed: it is almost entirely symlinks into a separate checkout the user already trusts, not a repository directory a stray link could escape, though a symlink that leads back *outside* the skill's own directory is rejected.
+
+Unticking something removes it, so the picker names the cost before it runs: for each skill about to be deleted, it shows which agents are assigned to it and asks for confirmation, the same warning a single skill's own delete button shows. No confirmation is shown when nothing is being removed.
+
+The route returns `{created, updated, removed, unassigned, skipped, errors}` (slugs, plus `unassigned: [{slug, agents}]` naming who lost each removed skill), and the UI shows it after the sync runs.
 
 ## Skills View
 

@@ -67,11 +67,36 @@ async def apply_selected_skills(db, skill_files_by_slug: dict[str, ImportedSkill
 
 
 async def list_available_skills(db, directory: Path) -> list[dict]:
-    """PR 1: names only, no instructions or file contents -- a directory listing is cheap, the bodies are not. A union of what's on disk and what's already imported, so a since-vanished directory still shows up (`on_disk: false`) instead of becoming permanently unremovable through this screen."""
-    skill_files, _errors = await asyncio.to_thread(scan_claude_code_skills, directory)
-    on_disk = index_skill_files_by_slug(skill_files)
+    """PR 1: names only, no instructions or file contents -- reads just SKILL.md's front matter, never a sibling file, so opening the picker never pays PR 3's full inlining cost. A union of what's on disk and what's already imported, so a since-vanished directory still shows up (`on_disk: false`) instead of becoming permanently unremovable through this screen."""
+    on_disk = await asyncio.to_thread(scan_available_skill_names, directory)
     imported = await load_imported_skills_by_slug(db)
     return [build_available_entry(slug, on_disk, imported) for slug in sorted(set(on_disk) | set(imported))]
+
+
+def scan_available_skill_names(directory: Path) -> dict[str, str]:
+    if not directory.is_dir():
+        return {}
+    names: dict[str, str] = {}
+    for entry in sorted(directory.iterdir()):
+        read_available_skill_name(entry, names)
+    return names
+
+
+def read_available_skill_name(entry: Path, names: dict[str, str]) -> None:
+    skill_md = entry / "SKILL.md"
+    if not entry.is_dir() or not skill_md.is_file():
+        return
+    try:
+        front_matter, _ = split_front_matter(read_front_matter_prefix(skill_md))
+    except OSError:
+        return
+    names[entry.name] = front_matter.get("name") or entry.name
+
+
+def read_front_matter_prefix(skill_md: Path, limit: int = 8_192) -> str:
+    """A front matter block is a handful of lines -- reading a small prefix instead of the whole file is what keeps this listing cheap."""
+    with skill_md.open("r", encoding="utf-8", errors="replace") as handle:
+        return handle.read(limit)
 
 
 async def load_imported_skills_by_slug(db) -> dict[str, Skill]:
@@ -79,10 +104,9 @@ async def load_imported_skills_by_slug(db) -> dict[str, Skill]:
     return {skill.slug: skill for skill in (await db.execute(query)).scalars()}
 
 
-def build_available_entry(slug: str, on_disk: dict[str, ImportedSkillFile], imported: dict[str, Skill]) -> dict:
-    skill_file = on_disk.get(slug)
-    name = skill_file.name if skill_file is not None else imported[slug].name
-    return {"slug": slug, "name": name, "in_catalog": slug in imported, "on_disk": skill_file is not None}
+def build_available_entry(slug: str, on_disk: dict[str, str], imported: dict[str, Skill]) -> dict:
+    name = on_disk[slug] if slug in on_disk else imported[slug].name
+    return {"slug": slug, "name": name, "in_catalog": slug in imported, "on_disk": slug in on_disk}
 
 
 def index_skill_files_by_slug(skill_files: list[ImportedSkillFile | None]) -> dict[str, ImportedSkillFile]:

@@ -1,7 +1,8 @@
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from deps import get_db
 from events.bus import bus
@@ -42,7 +43,8 @@ class EditSkillBody(BaseModel):
 
 
 class ImportSkillsBody(BaseModel):
-    slugs: list[str] | None = None
+    # allow-comment: a real catalog is tens of entries; this bound is a resource-exhaustion guard, not a realistic limit.
+    slugs: list[Annotated[str, Field(max_length=120)]] | None = Field(default=None, max_length=1_000)
 
 
 @router.get("")
