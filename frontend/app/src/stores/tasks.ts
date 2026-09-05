@@ -24,6 +24,21 @@ export const useTasksStore = defineStore("tasks", {
       this.upsert(task)
       return task
     },
+    async editTask(taskId: string, patch: Partial<Pick<Task, "title" | "description" | "priority" | "repository_id">>) {
+      const task = await api.patch<Task>(`/tasks/${taskId}`, patch)
+      this.upsert(task)
+      return task
+    },
+    async archiveTask(taskId: string) {
+      const task = await api.post<Task>(`/tasks/${taskId}/archive`)
+      this.upsert(task)
+      return task
+    },
+    async retryTask(taskId: string) {
+      const task = await api.post<Task>(`/tasks/${taskId}/retry`)
+      this.upsert(task)
+      return task
+    },
     upsert(task: Task) {
       const index = this.tasks.findIndex((existing) => existing.id === task.id)
       if (index === -1) this.tasks.push(task)

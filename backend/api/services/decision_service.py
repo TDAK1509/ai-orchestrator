@@ -101,6 +101,12 @@ async def cancel_pending_decisions_for_session(db: AsyncSession, agent_session_i
     return await cancel_pending_decisions(db, query)
 
 
+async def cancel_pending_decisions_for_task(db: AsyncSession, task_id: uuid.UUID) -> list[DecisionRequest]:
+    """PR 0b: archiving a task must not leave a decision answerable later -- answer_decision's unblock_agent_and_task would otherwise set an ARCHIVED task back to IN_PROGRESS (codex high)."""
+    query = select(DecisionRequest).where(DecisionRequest.task_id == task_id, DecisionRequest.status == DecisionStatus.PENDING)
+    return await cancel_pending_decisions(db, query)
+
+
 async def cancel_pending_decisions(db: AsyncSession, query) -> list[DecisionRequest]:
     pending = list((await db.execute(query)).scalars())
     cancelled, resolved_events = await cancel_and_resolve_all(db, pending)

@@ -78,6 +78,21 @@ async function saveRuntime(): Promise<void> {
     savingRuntime.value = false
   }
 }
+
+const messageDraft = ref("")
+const sendingMessage = ref(false)
+
+async function sendMessage(): Promise<void> {
+  const content = messageDraft.value.trim()
+  if (!content) return
+  sendingMessage.value = true
+  try {
+    await agentsStore.sendMessage(props.agent.id, content)
+    messageDraft.value = ""
+  } finally {
+    sendingMessage.value = false
+  }
+}
 </script>
 
 <template>
@@ -163,6 +178,24 @@ async function saveRuntime(): Promise<void> {
         </li>
       </ul>
       <p v-else class="text-sm text-gray-400">No activity yet.</p>
+
+      <div class="mt-4 border-t border-gray-100 pt-3">
+        <textarea
+          v-model="messageDraft"
+          :disabled="agent.status === 'working'"
+          class="w-full rounded border border-gray-300 px-2 py-1 text-sm disabled:bg-gray-50 disabled:text-gray-400"
+          rows="2"
+          placeholder="Message this agent..."
+        />
+        <p v-if="agent.status === 'working'" class="mt-1 text-xs text-gray-400">Agent is working; wait for it to finish before messaging it.</p>
+        <button
+          class="mt-2 rounded bg-blue-600 px-2 py-1 text-sm text-white disabled:opacity-50"
+          :disabled="!messageDraft.trim() || agent.status === 'working' || sendingMessage"
+          @click="sendMessage"
+        >
+          Send
+        </button>
+      </div>
     </div>
 
     <div v-else class="pt-4">
