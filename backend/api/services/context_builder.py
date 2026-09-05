@@ -24,6 +24,7 @@ async def render_message_sections(db, agent: Agent, task: Task, repo_root: Path,
         render_checkpoint(checkpoint),
         render_task(task),
         render_checkpoint_instruction(),
+        render_scratch_instruction(),
     ]
 
 
@@ -107,3 +108,8 @@ def render_task(task: Task) -> str:
 def render_checkpoint_instruction() -> str:
     """A1.1: nothing extracts memory from a finished task unless the agent leaves one behind (README 32.2) -- so ask for it explicitly on every run, not only a rotated one."""
     return "## Before you finish\nCall the checkpoint tool's write_checkpoint with a summary of what you did, any decisions, discoveries, blockers or risks, before ending your turn."
+
+
+def render_scratch_instruction() -> str:
+    """PR 2: landing now stages only tracked-and-untracked-unignored paths, so this worktree's `.scratch/` (already git-ignored) is where scratch work belongs -- it never lands in the commit."""
+    return "## Scratch work\nPut notes, plans, logs and other scratch work in `.scratch/` in this worktree. It is git-ignored and will not be committed."

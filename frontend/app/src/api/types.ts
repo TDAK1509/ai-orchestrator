@@ -28,6 +28,7 @@ export interface Task {
   priority: TaskPriority
   assignee_id: string | null
   repository_id: string | null
+  created_by_agent_id: string | null
   started_at: string | null
   completed_at: string | null
   created_at: string

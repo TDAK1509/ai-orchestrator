@@ -124,17 +124,26 @@ class RuntimeService:
         return run
 
     def _build_internal_servers(self, agent: Agent, target: RunTarget, agent_session: AgentSession) -> dict[str, dict]:
-        """Wires ask_human (19.7) and checkpoint (17.5) in for every run: unlike a catalog server, neither is opt-in."""
+        """Wires ask_human (19.7), checkpoint (17.5) and create_task (PR 5) in for every run: unlike a catalog server, none of them is opt-in."""
         database_url = self.settings.ask_human_database_url or self.settings.database_url
         if not database_url:
             return {}
-        env = {"DATABASE_URL": database_url, "AGENT_ID": str(agent.id), "AGENT_SESSION_ID": str(agent_session.id)}
-        if target.task_id is not None:
-            env["TASK_ID"] = str(target.task_id)
+        env = self._internal_server_env(database_url, agent, target, agent_session)
         return self._internal_server_entries(env)
 
+    def _internal_server_env(self, database_url: str, agent: Agent, target: RunTarget, agent_session: AgentSession) -> dict[str, str]:
+        env = {
+            "DATABASE_URL": database_url,
+            "AGENT_ID": str(agent.id),
+            "AGENT_SESSION_ID": str(agent_session.id),
+            **backend_api_env(),
+        }
+        if target.task_id is not None:
+            env["TASK_ID"] = str(target.task_id)
+        return env
+
     def _internal_server_entries(self, env: dict[str, str]) -> dict[str, dict]:
-        scripts = {"ask_human": "ask_human_mcp.py", "checkpoint": "checkpoint_mcp.py"}
+        scripts = {"ask_human": "ask_human_mcp.py", "checkpoint": "checkpoint_mcp.py", "create_task": "create_task_mcp.py"}
         return {
             name: {"command": sys.executable, "args": [str(Path(__file__).with_name(script))], "env": env}
             for name, script in scripts.items()
@@ -343,6 +352,15 @@ class RuntimeService:
             agent_session = await db.get(AgentSession, run.agent_session_id)
             await db_commit(db)
             return run, agent_session.agent_id
+
+
+def backend_api_env() -> dict[str, str]:
+    """The port and token an internal MCP subprocess needs to call back into this backend's own HTTP API (PR 1) -- never the agent process's env, only the MCP server's."""
+    env = {"AGENT_OFFICE_API_PORT": os.environ.get("AGENT_OFFICE_API_PORT", "8000")}
+    token = os.environ.get("AGENT_OFFICE_API_TOKEN")
+    if token is not None:
+        env["AGENT_OFFICE_API_TOKEN"] = token
+    return env
 
 
 def require_resumable_session(agent: Agent, agent_session: AgentSession, task_worktree: TaskWorktree | None) -> None:

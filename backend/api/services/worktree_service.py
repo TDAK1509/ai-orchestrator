@@ -37,29 +37,26 @@ async def create_task_worktree(db: AsyncSession, repo_root: Path, task: Task, ba
     return record
 
 
-async def remove_task_worktree(db: AsyncSession, default_repo_root: Path, task: Task) -> TaskWorktree | None:
+async def remove_task_worktree(db: AsyncSession, task: Task) -> TaskWorktree | None:
     """Archiving a task (PR 0b): the git checkout goes, but the row stays REMOVED, not deleted -- task_worktrees.task_id must survive alongside the task it archives with."""
     task_worktree = await find_task_worktree(db, task.id)
     if task_worktree is None:
         return None
     repository = await resolve_task_repository(db, task)
-    repo_root = resolve_repo_root(repository, default_repo_root)
-    await worktree_ops.remove_worktree(repo_root, Path(task_worktree.path))
+    await worktree_ops.remove_worktree(resolve_repo_root(repository), Path(task_worktree.path))
     task_worktree.status = WorktreeStatus.REMOVED
     await commit(db)
     return task_worktree
 
 
-async def resolve_task_repository(db: AsyncSession, task: Task) -> Repository | None:
-    """A2: a task with no repository_id keeps using the workspace's injected default -- every task created before this column existed."""
-    if task.repository_id is None:
-        return None
+async def resolve_task_repository(db: AsyncSession, task: Task) -> Repository:
+    """A2/PR 4: repository_id is required, so this always resolves -- there is no workspace-default fallback left to fall back to."""
     return await db.get(Repository, task.repository_id)
 
 
-def resolve_repo_root(repository: Repository | None, default_repo_root: Path) -> Path:
-    return Path(repository.path) if repository else default_repo_root
+def resolve_repo_root(repository: Repository) -> Path:
+    return Path(repository.path)
 
 
-def resolve_base_branch(repository: Repository | None, default_base_branch: str) -> str:
-    return repository.default_target_branch if repository else default_base_branch
+def resolve_base_branch(repository: Repository) -> str:
+    return repository.default_target_branch

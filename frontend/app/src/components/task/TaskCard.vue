@@ -6,7 +6,8 @@ import { useAttentionStore } from "../../stores/attention"
 import { useTasksStore } from "../../stores/tasks"
 import EditTaskDialog from "./EditTaskDialog.vue"
 
-const props = defineProps<{ task: Task }>()
+const props = defineProps<{ task: Task; selected?: boolean }>()
+defineEmits<{ toggle: [] }>()
 
 const agents = useAgentsStore()
 const tasks = useTasksStore()
@@ -19,6 +20,12 @@ function assigneeLabel(): string {
   if (!props.task.assignee_id) return "Unassigned"
   const agent = agents.byId(props.task.assignee_id)
   return agent ? `${agent.name} · ${agent.role}` : "Unassigned"
+}
+
+function createdByLabel(): string | null {
+  if (!props.task.created_by_agent_id) return null
+  const agent = agents.byId(props.task.created_by_agent_id)
+  return agent ? `Filed by ${agent.name}` : "Filed by an agent"
 }
 
 function idleAgents() {
@@ -47,13 +54,17 @@ async function retry(): Promise<void> {
 <template>
   <div class="rounded-lg border border-gray-200 bg-white p-3 shadow-sm">
     <div class="flex items-start justify-between gap-2">
-      <p class="font-medium">{{ task.title }}</p>
+      <div class="flex items-start gap-2">
+        <input type="checkbox" class="mt-1" :checked="selected" @change="$emit('toggle')" />
+        <p class="font-medium">{{ task.title }}</p>
+      </div>
       <div class="flex shrink-0 gap-2 text-xs">
         <button class="text-blue-600" @click="editing = true">Edit</button>
         <button class="text-red-600" @click="confirmingArchive = true">Archive</button>
       </div>
     </div>
     <p class="mt-1 text-sm text-gray-500">{{ assigneeLabel() }}</p>
+    <p v-if="createdByLabel()" class="mt-1 text-xs text-gray-400">{{ createdByLabel() }}</p>
     <p class="mt-1 text-xs uppercase tracking-wide text-gray-400">{{ task.priority }}</p>
     <select
       v-if="task.status === 'backlog'"

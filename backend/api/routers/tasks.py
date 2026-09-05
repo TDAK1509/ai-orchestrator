@@ -27,7 +27,8 @@ class CreateTaskBody(BaseModel):
     title: str
     description: str | None = None
     priority: TaskPriority = TaskPriority.MEDIUM
-    repository_id: uuid.UUID | None = None
+    repository_id: uuid.UUID
+    created_by_agent_id: uuid.UUID | None = None
 
 
 class EditTaskBody(BaseModel):
@@ -48,9 +49,10 @@ async def list_tasks_route(db=Depends(get_db)):
 
 @router.post("", status_code=201)
 async def create_task_route(body: CreateTaskBody, db=Depends(get_db)):
-    if body.repository_id is not None:
-        await get_or_404(db, Repository, body.repository_id, "repository")
-    task = await create_task(db, body.title, body.description, body.priority, body.repository_id)
+    await get_or_404(db, Repository, body.repository_id, "repository")
+    if body.created_by_agent_id is not None:
+        await get_or_404(db, Agent, body.created_by_agent_id, "agent")
+    task = await create_task(db, body.title, body.description, body.priority, body.repository_id, body.created_by_agent_id)
     bus.publish(TASK_CREATED, serialize(task))
     return serialize(task)
 
@@ -72,9 +74,9 @@ async def edit_task_route(task_id: uuid.UUID, body: EditTaskBody, db=Depends(get
 
 
 @router.post("/{task_id}/archive")
-async def archive_task_route(task_id: uuid.UUID, db=Depends(get_db), runtime_service=Depends(get_runtime_service), repo_root=Depends(get_repo_root)):
+async def archive_task_route(task_id: uuid.UUID, db=Depends(get_db), runtime_service=Depends(get_runtime_service)):
     task = await get_or_404(db, Task, task_id, "task")
-    task = await archive_task(db, runtime_service, repo_root, task)
+    task = await archive_task(db, runtime_service, task)
     return serialize(task)
 
 
