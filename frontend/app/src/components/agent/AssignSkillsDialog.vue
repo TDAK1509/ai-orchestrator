@@ -9,6 +9,8 @@ const emit = defineEmits<{ close: [] }>()
 
 const skills = useSkillsStore()
 const loading = ref(true)
+const loadFailed = ref(false)
+const initialSkillIds = ref<string[]>([])
 const ticked = ref<Set<string>>(new Set())
 const saving = ref(false)
 const error = ref("")
@@ -16,8 +18,10 @@ const error = ref("")
 onMounted(async () => {
   try {
     const [, agentSkills] = await Promise.all([skills.fetchSkills(), skills.fetchAgentSkills(props.agent.id)])
-    ticked.value = new Set(agentSkills.map((skill) => skill.id))
+    initialSkillIds.value = agentSkills.map((skill) => skill.id)
+    ticked.value = new Set(initialSkillIds.value)
   } catch (err) {
+    loadFailed.value = true
     error.value = err instanceof Error ? err.message : "Could not load skills"
   } finally {
     loading.value = false
@@ -46,21 +50,23 @@ async function save(): Promise<void> {
     await applyChanges()
     emit("close")
   } catch (err) {
-    error.value = err instanceof Error ? err.message : "Could not save, try again"
+    error.value = err instanceof Error ? err.message : "Some changes could not be saved; the list below reflects what actually took effect."
   } finally {
+    await skills.fetchAgentSkills(props.agent.id)
     saving.value = false
   }
 }
 
 async function applyChanges(): Promise<void> {
-  const current = new Set((skills.skillsByAgentId[props.agent.id] ?? []).map((skill) => skill.id))
-  const toAdd = [...ticked.value].filter((id) => !current.has(id))
-  const toRemove = [...current].filter((id) => !ticked.value.has(id))
-  await Promise.all([
-    ...toAdd.map((id) => skills.assignToAgent(id, props.agent.id)),
-    ...toRemove.map((id) => skills.unassignFromAgent(id, props.agent.id)),
-  ])
-  await skills.fetchAgentSkills(props.agent.id)
+  // Sequential, not Promise.all: a failure partway through must stop before firing the remaining
+  // mutations, and the always-run refetch above is what keeps the sheet honest either way.
+  const current = new Set(initialSkillIds.value)
+  for (const id of ticked.value) {
+    if (!current.has(id)) await skills.assignToAgent(id, props.agent.id)
+  }
+  for (const id of current) {
+    if (!ticked.value.has(id)) await skills.unassignFromAgent(id, props.agent.id)
+  }
 }
 </script>
 
@@ -73,6 +79,14 @@ async function applyChanges(): Promise<void> {
       </div>
 
       <div v-if="loading" class="mt-3 text-sm text-gray-500">Loading...</div>
+
+      <template v-else-if="loadFailed">
+        <p class="mt-3 text-sm text-red-600">{{ error }}</p>
+        <div class="mt-4 flex justify-end">
+          <button class="rounded border border-gray-300 px-3 py-1.5 text-sm" @click="$emit('close')">Close</button>
+        </div>
+      </template>
+
       <template v-else>
         <div class="mt-2 flex gap-2 text-xs">
           <button class="text-blue-600" @click="selectAll">All</button>

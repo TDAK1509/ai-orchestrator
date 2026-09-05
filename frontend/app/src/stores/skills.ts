@@ -6,15 +6,24 @@ export const useSkillsStore = defineStore("skills", {
   state: () => ({
     skills: [] as Skill[],
     assignedAgentsBySkillId: {} as Record<string, Agent[]>,
-    skillsByAgentId: {} as Record<string, Skill[]>,
+    agentSkillIds: {} as Record<string, string[]>,
   }),
+  getters: {
+    // allow-comment: derived from `skills`, not a stored snapshot -- an edit or delete elsewhere in this session self-heals every open agent sheet instead of only the next refetch.
+    skillsForAgent: (state) => (agentId: string) => {
+      const ids = new Set(state.agentSkillIds[agentId] ?? [])
+      return state.skills.filter((skill) => ids.has(skill.id))
+    },
+  },
   actions: {
     async fetchSkills() {
       this.skills = await api.get<Skill[]>("/skills")
     },
     async fetchAgentSkills(agentId: string) {
-      this.skillsByAgentId[agentId] = await api.get<Skill[]>(`/agents/${pathSegment(agentId)}/skills`)
-      return this.skillsByAgentId[agentId]
+      const agentSkills = await api.get<Skill[]>(`/agents/${pathSegment(agentId)}/skills`)
+      agentSkills.forEach((skill) => this.upsert(skill))
+      this.agentSkillIds[agentId] = agentSkills.map((skill) => skill.id)
+      return agentSkills
     },
     async fetchSkill(id: string) {
       this.upsert(await api.get<Skill>(`/skills/${pathSegment(id)}`))

@@ -117,12 +117,22 @@ async function saveIdentity(): Promise<void> {
   }
 }
 
-const agentSkills = computed(() => skills.skillsByAgentId[props.agent.id] ?? [])
+const agentSkills = computed(() => skills.skillsForAgent(props.agent.id))
 const showAssignSkills = ref(false)
+const removingSkillId = ref("")
+const removeSkillError = ref("")
 
 async function removeSkill(skillId: string): Promise<void> {
-  await skills.unassignFromAgent(skillId, props.agent.id)
-  await skills.fetchAgentSkills(props.agent.id)
+  removingSkillId.value = skillId
+  removeSkillError.value = ""
+  try {
+    await skills.unassignFromAgent(skillId, props.agent.id)
+  } catch (err) {
+    removeSkillError.value = err instanceof Error ? err.message : "Could not remove that skill, try again"
+  } finally {
+    await skills.fetchAgentSkills(props.agent.id)
+    removingSkillId.value = ""
+  }
 }
 
 const messageDraft = ref("")
@@ -230,10 +240,18 @@ async function sendMessage(): Promise<void> {
             class="flex items-center gap-1 rounded-full bg-gray-100 py-0.5 pl-2 pr-1 text-xs text-gray-700"
           >
             {{ skill.name }}
-            <button class="text-gray-400 hover:text-gray-600" title="Unassign" @click="removeSkill(skill.id)">✕</button>
+            <button
+              class="text-gray-400 hover:text-gray-600 disabled:opacity-50"
+              title="Unassign"
+              :disabled="removingSkillId === skill.id"
+              @click="removeSkill(skill.id)"
+            >
+              ✕
+            </button>
           </span>
         </div>
         <p v-else class="mt-2 text-sm text-gray-400">No skills assigned.</p>
+        <p v-if="removeSkillError" class="mt-1 text-xs text-red-600">{{ removeSkillError }}</p>
         <NextRunNotice class="mt-2" />
         <AssignSkillsDialog v-if="showAssignSkills" :agent="agent" @close="showAssignSkills = false" />
       </div>
