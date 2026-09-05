@@ -20,6 +20,49 @@ class WorktreeMismatchError(RuntimeError):
         super().__init__(f"{path} exists but is on branch {actual_branch!r}, expected {expected_branch!r}")
 
 
+async def resolve_worktree_base(repo_root: Path, target_ref: str) -> str:
+    """PR 1: fetches the remote branch behind a ref like "origin/main" right before cutting from it, instead of whatever a stale local ref last pulled -- but only once has_remote confirms the first segment really names one, so a local branch whose own name contains a slash (e.g. "release/1.0") is never mistaken for a remote-qualified ref."""
+    remote, branch = split_remote_ref(target_ref)
+    if remote is not None and await has_remote(repo_root, remote):
+        await fetch_remote_branch(repo_root, remote, branch)
+    return target_ref
+
+
+async def local_branch_name_for(repo_root: Path, ref: str) -> str:
+    """The plain branch name landing merges into or opens a PR against -- "origin/main" strips to "main" only when `origin` genuinely exists; a local branch like "release/1.0" is returned whole, not truncated at its first slash."""
+    remote, branch = split_remote_ref(ref)
+    if remote is not None and await has_remote(repo_root, remote):
+        return branch
+    return ref
+
+
+async def has_remote(repo_root: Path, remote: str) -> bool:
+    return await remote_url(repo_root, remote) is not None
+
+
+async def has_github_remote(repo_root: Path, remote: str) -> bool:
+    """PR 2: `gh pr create` only works against a GitHub remote -- landing via PR needs more than "a remote exists", it needs specifically this one to be GitHub's."""
+    url = await remote_url(repo_root, remote)
+    return url is not None and "github.com" in url
+
+
+async def remote_url(repo_root: Path, remote: str) -> str | None:
+    try:
+        return (await run_git(["remote", "get-url", remote], cwd=repo_root)).strip()
+    except GitCommandError:
+        return None
+
+
+async def fetch_remote_branch(repo_root: Path, remote: str, branch: str) -> None:
+    await run_git(["fetch", remote, branch], cwd=repo_root)
+
+
+def split_remote_ref(ref: str) -> tuple[str | None, str]:
+    """"origin/main" -> ("origin", "main"); "main" -> (None, "main"). This is only ever a candidate parse -- the caller must still confirm the first segment names a real remote before treating it as one."""
+    remote, separator, branch = ref.partition("/")
+    return (remote, branch) if separator else (None, ref)
+
+
 async def create_worktree(repo_root: Path, branch: str, path: Path, base_branch: str) -> None:
     if path.exists():
         await verify_existing_worktree(path, branch)

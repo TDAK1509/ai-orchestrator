@@ -27,10 +27,12 @@ async def find_task_worktree(db: AsyncSession, task_id: uuid.UUID) -> TaskWorktr
 
 
 async def create_task_worktree(db: AsyncSession, repo_root: Path, task: Task, base_branch: str) -> TaskWorktree:
+    """PR 1: base_branch is the repository's stored ref (e.g. "origin/main") -- resolve_worktree_base fetches it fresh and returns the actual ref to cut from, falling back to a local branch when there's no matching remote."""
     branch = f"agent-office/{task.id}"
     # allow-comment: sibling of repo_root, not inside it, so it never shows up as untracked clutter in repo_root's own git status.
     path = repo_root.parent / ".agent-office" / "worktrees" / str(task.id)
-    await worktree_ops.create_worktree(repo_root, branch, path, base_branch)
+    cut_from = await worktree_ops.resolve_worktree_base(repo_root, base_branch)
+    await worktree_ops.create_worktree(repo_root, branch, path, cut_from)
     record = TaskWorktree(id=uuid.uuid4(), task_id=task.id, branch=branch, base_branch=base_branch, path=str(path))
     db.add(record)
     await commit(db)

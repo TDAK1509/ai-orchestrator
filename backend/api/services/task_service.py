@@ -70,9 +70,8 @@ _DIRECT_MERGE_LOCK = asyncio.Lock()
 @dataclass
 class TaskRuntimePolicy:
     max_concurrent_agents: int
-    base_branch: str = "main"
-    merge_type: MergeType = MergeType.DIRECT
-    target_branch: str = "main"
+    # allow-comment: a repository with no remote falls back to MergeType.DIRECT regardless of this preference -- see resolve_merge_type.
+    merge_type: MergeType = MergeType.PR
 
 
 async def create_task(
@@ -161,17 +160,35 @@ async def stop_and_release_task_agent(db, runtime_service: RuntimeService, task:
 
 
 async def assign_task(db, runtime_service: RuntimeService, repo_root: Path, task: Task, agent: Agent, policy: TaskRuntimePolicy) -> Task:
-    await require_assignable(db, task, agent)
+    await require_assignable(db, task, agent, policy)
     task.assignee_id = agent.id
     task.status = TaskStatus.IN_PROGRESS
     task.started_at = utcnow()
     agent.current_task_id = task.id
     if await claim_slot_or_queue(db, agent, policy.max_concurrent_agents):
-        await start_agent_on_task(db, runtime_service, repo_root, agent, task, policy)
+        await start_or_revert_assignment(db, runtime_service, repo_root, agent, task, policy)
     return task
 
 
-async def require_assignable(db, task: Task, agent: Agent) -> None:
+async def start_or_revert_assignment(db, runtime_service: RuntimeService, repo_root: Path, agent: Agent, task: Task, policy: TaskRuntimePolicy) -> None:
+    """PR 1: the pre-flight fetch does not guarantee the worktree's own fetch (a queued agent can be promoted long after) also succeeds -- a failure here must not leave the task IN_PROGRESS and the agent WORKING with no run behind either of them."""
+    try:
+        await start_agent_on_task(db, runtime_service, repo_root, agent, task, policy)
+    except Exception:
+        await revert_failed_assignment(db, agent, task)
+        raise
+
+
+async def revert_failed_assignment(db, agent: Agent, task: Task) -> None:
+    task.status = TaskStatus.BACKLOG
+    task.assignee_id = None
+    task.started_at = None
+    agent.current_task_id = None
+    agent.status = AgentStatus.IDLE
+    await commit(db)
+
+
+async def require_assignable(db, task: Task, agent: Agent, policy: TaskRuntimePolicy) -> None:
     """A repeat assignment must not spawn a second runtime for the same worktree (README Rule 5: one primary task per agent), and a slot-count that only ever counts distinct WORKING agents can't catch that on its own."""
     if task.status != TaskStatus.BACKLOG:
         raise ValueError(f"task {task.id} is not assignable (status={task.status.value})")
@@ -179,19 +196,41 @@ async def require_assignable(db, task: Task, agent: Agent) -> None:
         raise ValueError(f"agent {agent.id} is not active")
     if agent.status != AgentStatus.IDLE:
         raise ValueError(f"agent {agent.id} is not idle (status={agent.status.value})")
-    await require_repo_ready_for_assignment(db, task)
+    await require_repo_ready_for_assignment(db, task, policy)
 
 
-async def require_repo_ready_for_assignment(db, task: Task) -> None:
-    """PR 4: the same branch check landing makes at merge time (runtime.landing.require_clean_checkout_of), run here before any work starts -- a wrong branch fails assignment in seconds instead of after a full run. Dirtiness is transient, so it only warns; landing is still the one that refuses on it."""
+async def require_repo_ready_for_assignment(db, task: Task, policy: TaskRuntimePolicy) -> None:
+    """PR 1: fetches the repository's default ref before anything else runs, so a stale base or a dead network fails assignment immediately instead of silently handing the agent old code."""
     repository = await resolve_task_repository(db, task)
     repo_root = resolve_repo_root(repository)
-    target_branch = resolve_base_branch(repository)
+    await require_fresh_base(repo_root, repository.default_target_branch)
+    if await resolve_merge_type(repo_root, policy.merge_type) == MergeType.DIRECT:
+        await require_direct_merge_ready(repo_root, repository.default_target_branch)
+
+
+async def require_direct_merge_ready(repo_root: Path, default_ref: str) -> None:
+    """PR 4: the same branch check landing makes at merge time (runtime.landing.require_clean_checkout_of), run here before any work starts -- only reached when resolve_merge_type says this repository lands directly into its checkout. Dirtiness is transient, so it only warns; landing is still the one that refuses on it."""
+    target_branch = await worktree_ops.local_branch_name_for(repo_root, default_ref)
     current_branch = await worktree_ops.read_current_branch(repo_root)
     if current_branch != target_branch:
         raise ValueError(f"{repo_root} is on {current_branch!r}, expected {target_branch!r}")
     if await worktree_ops.has_staged_changes(repo_root):
         logger.warning("repository %s is dirty (expected clean on %r); assignment allowed, landing will refuse until it is clean", repo_root, target_branch)
+
+
+async def require_fresh_base(repo_root: Path, target_ref: str) -> None:
+    """PR 1: a stale base is worse than a clear failure -- a fetch failure here (network down, remote gone) blocks assignment with the git error instead of silently cutting the worktree from whatever was last pulled."""
+    try:
+        await worktree_ops.resolve_worktree_base(repo_root, target_ref)
+    except worktree_ops.GitCommandError as error:
+        raise ValueError(f"could not fetch {target_ref} for {repo_root}: {error}") from error
+
+
+async def resolve_merge_type(repo_root: Path, preferred: MergeType) -> MergeType:
+    """PR 2: `gh pr create` only works against a GitHub remote -- a repository with none, or one whose `origin` points elsewhere (GitLab, Bitbucket, a local bare repo), lands directly into its checkout instead, regardless of the workspace's preferred merge type."""
+    if preferred == MergeType.DIRECT:
+        return MergeType.DIRECT
+    return MergeType.PR if await worktree_ops.has_github_remote(repo_root, "origin") else MergeType.DIRECT
 
 
 async def start_agent_on_task(db, runtime_service: RuntimeService, repo_root: Path, agent: Agent, task: Task, policy: TaskRuntimePolicy) -> None:
@@ -296,12 +335,14 @@ async def land_or_block(db, agent: Agent, task: Task, task_worktree: TaskWorktre
 
 
 async def land_task(db, agent: Agent, task: Task, task_worktree: TaskWorktree, policy: TaskRuntimePolicy) -> TaskMerge:
-    task_repo_root, target_branch = await resolve_task_repo_context(db, task)
+    task_repo_root, default_ref = await resolve_task_repo_context(db, task)
+    target_branch = await worktree_ops.local_branch_name_for(task_repo_root, default_ref)
+    merge_type = await resolve_merge_type(task_repo_root, policy.merge_type)
     path = Path(task_worktree.path)
     landed_sha = await commit_task_worktree(path, f"{task.title}\n\nAgent Office task {task.id}")
-    if policy.merge_type == MergeType.PR:
+    if merge_type == MergeType.PR:
         await worktree_ops.push_worktree(path, task_worktree.branch)
-    merge = await record_landed_merge(db, task, task_worktree, task_repo_root, target_branch, policy)
+    merge = await record_landed_merge(db, task, task_worktree, task_repo_root, target_branch, merge_type)
     await extract_completion_memories_safely(db, agent, task, task_worktree.branch, landed_sha)
     return merge
 
@@ -312,8 +353,8 @@ async def commit_task_worktree(path: Path, message: str) -> str | None:
     return await worktree_ops.commit_paths(path, paths, message)
 
 
-async def record_landed_merge(db, task: Task, task_worktree: TaskWorktree, repo_root: Path, target_branch: str, policy: TaskRuntimePolicy) -> TaskMerge:
-    merge = await record_merge(task, task_worktree, repo_root, target_branch, policy)
+async def record_landed_merge(db, task: Task, task_worktree: TaskWorktree, repo_root: Path, target_branch: str, merge_type: MergeType) -> TaskMerge:
+    merge = await record_merge(task, task_worktree, repo_root, target_branch, merge_type)
     db.add(merge)
     task.status = TaskStatus.DONE
     task.completed_at = utcnow()
@@ -330,8 +371,8 @@ async def extract_completion_memories_safely(db, agent: Agent, task: Task, branc
         logger.exception("memory extraction failed for task %s", task.id)
 
 
-async def record_merge(task: Task, task_worktree: TaskWorktree, repo_root: Path, target_branch: str, policy: TaskRuntimePolicy) -> TaskMerge:
-    if policy.merge_type == MergeType.PR:
+async def record_merge(task: Task, task_worktree: TaskWorktree, repo_root: Path, target_branch: str, merge_type: MergeType) -> TaskMerge:
+    if merge_type == MergeType.PR:
         return await record_pr_merge(task, task_worktree, target_branch)
     return await record_direct_merge(task, task_worktree, repo_root, target_branch)
 

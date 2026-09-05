@@ -11,10 +11,14 @@ const entries = ref<DirectoryEntry[]>([])
 const loading = ref(false)
 const error = ref("")
 const registering = ref(false)
+const branchDraft = ref("")
+const hasRemote = ref<boolean | null>(null)
+const inspecting = ref(false)
 
 onMounted(() => browseTo(undefined))
 
 async function browseTo(path: string | undefined): Promise<void> {
+  resetInspection()
   loading.value = true
   error.value = ""
   try {
@@ -25,6 +29,32 @@ async function browseTo(path: string | undefined): Promise<void> {
   } finally {
     loading.value = false
   }
+  await inspectCurrentDirectory()
+}
+
+async function inspectCurrentDirectory(): Promise<void> {
+  const path = currentPath.value
+  if (!path) return
+  inspecting.value = true
+  try {
+    const info = await repositories.inspectRepository(path)
+    if (currentPath.value === path) applyInspection(info.default_target_branch, info.has_remote)
+  } catch {
+    if (currentPath.value === path) resetInspection()
+  } finally {
+    if (currentPath.value === path) inspecting.value = false
+  }
+}
+
+function applyInspection(defaultTargetBranch: string, remoteFound: boolean): void {
+  branchDraft.value = defaultTargetBranch
+  hasRemote.value = remoteFound
+}
+
+function resetInspection(): void {
+  branchDraft.value = ""
+  hasRemote.value = null
+  inspecting.value = false
 }
 
 function goUp(): void {
@@ -36,10 +66,10 @@ async function registerCurrentDirectory(): Promise<void> {
   registering.value = true
   error.value = ""
   try {
-    const repository = await repositories.createRepository(currentPath.value, undefined, "main")
+    const repository = await repositories.createRepository(currentPath.value, undefined, branchDraft.value || "main")
     emit("registered", repository.id)
   } catch {
-    error.value = "Could not register this directory -- check it is a git repository with a 'main' branch."
+    error.value = `Could not register this directory -- check it is a git repository with a '${branchDraft.value || "main"}' branch.`
   } finally {
     registering.value = false
   }
@@ -67,12 +97,20 @@ async function registerCurrentDirectory(): Promise<void> {
         </button>
         <p v-if="!loading && !entries.length" class="px-2 py-1 text-sm text-gray-400">No subdirectories.</p>
       </div>
+
+      <template v-if="currentPath">
+        <label class="mt-2 block text-xs font-medium text-gray-500">Base branch</label>
+        <input v-model="branchDraft" placeholder="origin/main" class="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-sm" />
+        <p v-if="hasRemote === true" class="mt-1 text-xs text-gray-400">Has a remote -- tasks will land as pull requests.</p>
+        <p v-else-if="hasRemote === false" class="mt-1 text-xs text-gray-400">No remote -- tasks will land by merging directly into this checkout.</p>
+      </template>
+
       <p v-if="error" class="mt-2 text-sm text-red-600">{{ error }}</p>
       <div class="mt-4 flex justify-end gap-2">
         <button class="rounded border border-gray-300 px-3 py-1.5 text-sm" @click="$emit('close')">Cancel</button>
         <button
           class="rounded bg-blue-600 px-3 py-1.5 text-sm text-white disabled:opacity-50"
-          :disabled="!currentPath || registering"
+          :disabled="!currentPath || !branchDraft || inspecting || registering"
           @click="registerCurrentDirectory"
         >
           Use this directory
