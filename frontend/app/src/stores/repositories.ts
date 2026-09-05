@@ -1,6 +1,6 @@
 import { defineStore } from "pinia"
 import { api } from "../api/client"
-import type { Repository } from "../api/types"
+import type { DirectoryEntry, Repository } from "../api/types"
 
 export const useRepositoriesStore = defineStore("repositories", {
   state: () => ({
@@ -17,6 +17,11 @@ export const useRepositoriesStore = defineStore("repositories", {
       const repository = await api.post<Repository>("/repositories", { path, name, default_target_branch: defaultTargetBranch })
       this.repositories.push(repository)
       return repository
+    },
+    async browseDirectory(path?: string) {
+      const query = path ? `?path=${encodeURIComponent(path)}` : ""
+      const { entries } = await api.get<{ entries: DirectoryEntry[] }>(`/filesystem/directory${query}`)
+      return entries
     },
   },
 })

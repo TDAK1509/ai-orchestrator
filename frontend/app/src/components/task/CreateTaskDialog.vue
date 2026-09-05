@@ -3,6 +3,7 @@ import { ref } from "vue"
 import type { TaskPriority } from "../../api/types"
 import { useRepositoriesStore } from "../../stores/repositories"
 import { useTasksStore } from "../../stores/tasks"
+import RegisterRepositoryDialog from "./RegisterRepositoryDialog.vue"
 
 defineEmits<{ close: [] }>()
 
@@ -13,6 +14,7 @@ const description = ref("")
 const priority = ref<TaskPriority>("medium")
 const repositoryId = ref("")
 const submitting = ref(false)
+const showRegisterRepository = ref(false)
 
 async function submit(onDone: () => void): Promise<void> {
   if (!title.value) return
@@ -23,6 +25,11 @@ async function submit(onDone: () => void): Promise<void> {
   } finally {
     submitting.value = false
   }
+}
+
+function onRepositoryRegistered(newRepositoryId: string): void {
+  repositoryId.value = newRepositoryId
+  showRegisterRepository.value = false
 }
 </script>
 
@@ -43,7 +50,10 @@ async function submit(onDone: () => void): Promise<void> {
         <option value="medium">Medium</option>
         <option value="high">High</option>
       </select>
-      <label class="mt-3 block text-sm font-medium">Repository</label>
+      <label class="mt-3 flex items-center justify-between text-sm font-medium">
+        Repository
+        <button type="button" class="text-xs font-normal text-blue-600" @click="showRegisterRepository = true">+ Register a repository</button>
+      </label>
       <select v-model="repositoryId" class="mt-1 w-full rounded border border-gray-300 px-2 py-1">
         <option value="">Workspace default</option>
         <option v-for="repository in repositories.repositories" :key="repository.id" :value="repository.id">
@@ -61,5 +71,6 @@ async function submit(onDone: () => void): Promise<void> {
         </button>
       </div>
     </div>
+    <RegisterRepositoryDialog v-if="showRegisterRepository" @close="showRegisterRepository = false" @registered="onRepositoryRegistered" />
   </div>
 </template>

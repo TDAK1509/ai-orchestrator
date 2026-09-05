@@ -120,7 +120,8 @@ async def resolve_agent_mcp_servers(db, repo_root: Path, agent: Agent) -> list[M
 async def finish_task_run(db, runtime_service: RuntimeService, repo_root: Path, agent: Agent, task: Task, task_worktree: TaskWorktree, run: ExecutionRun, policy: TaskRuntimePolicy) -> None:
     if run.status == RunStatus.COMPLETED:
         await land_or_block(db, agent, task, task_worktree, repo_root, policy)
-    elif run.status == RunStatus.INTERRUPTED:
+    elif run.status in (RunStatus.INTERRUPTED, RunStatus.KILLED):
+        # allow-comment: B2's deliberate Stop ends the same way an unplanned interruption does (codex P1) -- the process is gone either way, and the task needs the same up-to-3-attempt resume, not an immediate permanent failure.
         await handle_interrupted_run(db, runtime_service, repo_root, agent, task, task_worktree, run, policy)
     else:
         await fail_task(db, agent, task, run)

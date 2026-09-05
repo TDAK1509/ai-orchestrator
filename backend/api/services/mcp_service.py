@@ -36,9 +36,11 @@ def path_mtime(path: Path) -> float:
 
 
 def parse_pool(paths: list[Path]) -> list[McpServerRef]:
+    """A2, codex P1: the first path to define a name wins -- default_pool_paths lists the human-controlled home config before a repository's own .mcp.json, so a repository (now agent-pickable, not just the operator's own) can't redefine a name the agent already has permission for and inherit that trust."""
     servers: dict[str, McpServerRef] = {}
     for path in paths:
-        servers.update(read_pool_file(path))
+        for name, server in read_pool_file(path).items():
+            servers.setdefault(name, server)
     return list(servers.values())
 
 

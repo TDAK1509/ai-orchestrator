@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -21,7 +22,9 @@ class DirectoryListing(BaseModel):
 async def list_directory_route(path: str | None = None) -> DirectoryListing:
     """A0: a names-only filesystem oracle for the repository picker -- never reads file contents or sizes, only entry names and a cheap `.git` existence probe (README appendix: `.git` is a file inside a worktree, not just a directory, so is_dir() alone would mislabel one)."""
     target = resolve_existing_directory(path)
-    return DirectoryListing(entries=list_subdirectories(target))
+    # allow-comment: codex P2 -- iterdir()/is_dir()/.git existence are all blocking syscalls; off the event loop so one slow or huge (e.g. network-mounted) directory can't stall every other request.
+    entries = await asyncio.to_thread(list_subdirectories, target)
+    return DirectoryListing(entries=entries)
 
 
 def resolve_existing_directory(path: str | None) -> Path:

@@ -33,6 +33,13 @@ export interface Task {
   created_at: string
 }
 
+export interface DirectoryEntry {
+  name: string
+  path: string
+  is_directory: boolean
+  is_git_repo: boolean
+}
+
 export interface Repository {
   id: string
   name: string

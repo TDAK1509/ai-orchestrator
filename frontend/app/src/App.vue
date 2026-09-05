@@ -97,7 +97,7 @@ function openAttentionEvent(event: AttentionEvent): void {
       </main>
     </div>
 
-    <AgentSheet v-if="selectedAgent" :agent="agents.byId(selectedAgent.id) ?? selectedAgent" @close="selectedAgent = null" />
+    <AgentSheet v-if="selectedAgent" :key="selectedAgent.id" :agent="agents.byId(selectedAgent.id) ?? selectedAgent" @close="selectedAgent = null" />
     <CreateTaskDialog v-if="showCreateTask" @close="showCreateTask = false" />
     <HireAgentDialog v-if="showHireAgent" @close="showHireAgent = false" />
   </div>
