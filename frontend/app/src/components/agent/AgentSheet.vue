@@ -6,9 +6,12 @@ import { useAgentsStore } from "../../stores/agents"
 import { useAttentionStore } from "../../stores/attention"
 import { useMemoryStore } from "../../stores/memory"
 import { useRepositoriesStore } from "../../stores/repositories"
+import { useSkillsStore } from "../../stores/skills"
 import { useTasksStore } from "../../stores/tasks"
 import { useTeamsStore } from "../../stores/teams"
+import AssignSkillsDialog from "./AssignSkillsDialog.vue"
 import DecisionPanel from "./DecisionPanel.vue"
+import NextRunNotice from "./NextRunNotice.vue"
 
 const props = defineProps<{ agent: Agent }>()
 defineEmits<{ close: [] }>()
@@ -20,6 +23,7 @@ const activity = useActivityStore()
 const memory = useMemoryStore()
 const teams = useTeamsStore()
 const repositories = useRepositoriesStore()
+const skills = useSkillsStore()
 const confirmingFire = ref(false)
 
 const currentTask = computed(() => (props.agent.current_task_id ? tasks.byId(props.agent.current_task_id) : undefined))
@@ -31,6 +35,7 @@ const team = computed(() => (props.agent.team_id ? teams.byId(props.agent.team_i
 
 onMounted(() => {
   memory.fetchAgentMemories(props.agent.id)
+  skills.fetchAgentSkills(props.agent.id)
   window.addEventListener("keydown", handleKeydown)
 })
 
@@ -112,6 +117,14 @@ async function saveIdentity(): Promise<void> {
   }
 }
 
+const agentSkills = computed(() => skills.skillsByAgentId[props.agent.id] ?? [])
+const showAssignSkills = ref(false)
+
+async function removeSkill(skillId: string): Promise<void> {
+  await skills.unassignFromAgent(skillId, props.agent.id)
+  await skills.fetchAgentSkills(props.agent.id)
+}
+
 const messageDraft = ref("")
 const sendingMessage = ref(false)
 
@@ -189,10 +202,7 @@ async function sendMessage(): Promise<void> {
               placeholder="This agent's job description and working rules..."
             />
           </div>
-          <p class="text-xs text-gray-400">
-            Applies the next time this agent starts a new session — a new task, or one rebuilt from a checkpoint. A
-            message, a retry, or crash recovery resumes the current session and won't see the change.
-          </p>
+          <NextRunNotice />
           <p class="text-xs text-gray-400">A rule for several agents belongs in a skill, not copied into each agent's instructions.</p>
           <p v-if="identityError" class="text-xs text-red-600">{{ identityError }}</p>
           <div class="flex gap-2">
@@ -206,6 +216,26 @@ async function sendMessage(): Promise<void> {
             <button class="rounded border border-gray-300 px-2 py-1 text-sm" @click="editingIdentity = false">Cancel</button>
           </div>
         </div>
+      </div>
+
+      <div class="border-b border-gray-100 py-4">
+        <div class="flex items-center justify-between">
+          <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-400">Skills</h3>
+          <button class="text-sm text-blue-600" @click="showAssignSkills = true">Add</button>
+        </div>
+        <div v-if="agentSkills.length" class="mt-2 flex flex-wrap gap-1.5">
+          <span
+            v-for="skill in agentSkills"
+            :key="skill.id"
+            class="flex items-center gap-1 rounded-full bg-gray-100 py-0.5 pl-2 pr-1 text-xs text-gray-700"
+          >
+            {{ skill.name }}
+            <button class="text-gray-400 hover:text-gray-600" title="Unassign" @click="removeSkill(skill.id)">✕</button>
+          </span>
+        </div>
+        <p v-else class="mt-2 text-sm text-gray-400">No skills assigned.</p>
+        <NextRunNotice class="mt-2" />
+        <AssignSkillsDialog v-if="showAssignSkills" :agent="agent" @close="showAssignSkills = false" />
       </div>
 
       <div v-if="currentTask" class="mt-4">

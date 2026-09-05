@@ -6,10 +6,15 @@ export const useSkillsStore = defineStore("skills", {
   state: () => ({
     skills: [] as Skill[],
     assignedAgentsBySkillId: {} as Record<string, Agent[]>,
+    skillsByAgentId: {} as Record<string, Skill[]>,
   }),
   actions: {
     async fetchSkills() {
       this.skills = await api.get<Skill[]>("/skills")
+    },
+    async fetchAgentSkills(agentId: string) {
+      this.skillsByAgentId[agentId] = await api.get<Skill[]>(`/agents/${pathSegment(agentId)}/skills`)
+      return this.skillsByAgentId[agentId]
     },
     async fetchSkill(id: string) {
       this.upsert(await api.get<Skill>(`/skills/${pathSegment(id)}`))
