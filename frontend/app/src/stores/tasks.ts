@@ -30,7 +30,18 @@ export const useTasksStore = defineStore("tasks", {
       return task
     },
     async bulkArchive(taskIds: string[]) {
-      return Promise.all(taskIds.map((taskId) => this.archiveTask(taskId)))
+      const failedTaskIds: string[] = []
+      for (const taskId of taskIds) {
+        await this.archiveOneOfMany(taskId, failedTaskIds)
+      }
+      return failedTaskIds
+    },
+    async archiveOneOfMany(taskId: string, failedTaskIds: string[]) {
+      try {
+        await this.archiveTask(taskId)
+      } catch {
+        failedTaskIds.push(taskId)
+      }
     },
     async archiveTask(taskId: string) {
       const task = await api.post<Task>(`/tasks/${taskId}/archive`)

@@ -6,6 +6,9 @@ import type { Task } from "../../api/types"
 
 const tasks = useTasksStore()
 const selected = ref<Set<string>>(new Set())
+const confirmingBulkArchive = ref(false)
+const archiving = ref(false)
+const bulkArchiveError = ref("")
 
 const columns: { status: Task["status"]; label: string }[] = [
   { status: "backlog", label: "Backlog" },
@@ -20,17 +23,37 @@ function toggleSelection(taskId: string): void {
 }
 
 async function archiveSelected(): Promise<void> {
-  await tasks.bulkArchive([...selected.value])
-  selected.value.clear()
+  archiving.value = true
+  bulkArchiveError.value = ""
+  try {
+    const failedTaskIds = await tasks.bulkArchive([...selected.value])
+    selected.value = new Set(failedTaskIds)
+    if (failedTaskIds.length > 0) bulkArchiveError.value = `${failedTaskIds.length} task(s) could not be archived; they stay selected.`
+  } finally {
+    archiving.value = false
+    confirmingBulkArchive.value = false
+  }
 }
 </script>
 
 <template>
   <div class="p-4">
-    <div v-if="selected.size > 0" class="mb-3 flex items-center gap-3 rounded border border-gray-200 bg-gray-50 px-3 py-2 text-sm">
-      <span>{{ selected.size }} selected</span>
-      <button class="rounded bg-red-600 px-2 py-1 text-xs text-white" @click="archiveSelected">Archive selected</button>
-      <button class="text-xs text-gray-500" @click="selected.clear()">Clear</button>
+    <div v-if="selected.size > 0" class="mb-3 flex flex-col gap-2 rounded border border-gray-200 bg-gray-50 px-3 py-2 text-sm">
+      <div class="flex items-center gap-3">
+        <span>{{ selected.size }} selected</span>
+        <button class="rounded bg-red-600 px-2 py-1 text-xs text-white" @click="confirmingBulkArchive = true">Archive selected</button>
+        <button class="text-xs text-gray-500" @click="selected.clear()">Clear</button>
+      </div>
+      <div v-if="confirmingBulkArchive" class="rounded border border-red-200 bg-red-50 p-2 text-xs">
+        <p>Archive {{ selected.size }} task(s)? Any uncommitted work in their worktrees is discarded.</p>
+        <div class="mt-2 flex gap-2">
+          <button class="rounded bg-red-600 px-2 py-1 text-white disabled:opacity-50" :disabled="archiving" @click="archiveSelected">
+            {{ archiving ? "Archiving..." : "Archive" }}
+          </button>
+          <button class="rounded border border-gray-300 px-2 py-1" :disabled="archiving" @click="confirmingBulkArchive = false">Cancel</button>
+        </div>
+      </div>
+      <p v-if="bulkArchiveError" class="text-xs text-red-600">{{ bulkArchiveError }}</p>
     </div>
     <div class="grid grid-cols-4 gap-4">
       <div v-for="column in columns" :key="column.status">
