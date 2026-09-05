@@ -25,7 +25,7 @@ run_entrypoint() {
     require_executable "$ALEMBIC" ALEMBIC
     require_executable "$UVICORN" UVICORN
     migrate_to_head
-    exec "$UVICORN" app:app --port 8000 "$@"
+    exec "$UVICORN" app:app --port "${AGENT_OFFICE_API_PORT:-8000}" "$@"
 }
 
 require_executable() {
