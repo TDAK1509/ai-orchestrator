@@ -20,6 +20,37 @@ class WorktreeMismatchError(RuntimeError):
         super().__init__(f"{path} exists but is on branch {actual_branch!r}, expected {expected_branch!r}")
 
 
+async def resolve_worktree_base(repo_root: Path, target_ref: str) -> str:
+    """PR 1: fetches the remote branch behind a ref like "origin/main" right before cutting from it, instead of whatever a stale local ref last pulled -- falling back to the local branch of the same name when there is no matching remote."""
+    remote, branch = split_remote_ref(target_ref)
+    if remote is None or not await has_remote(repo_root, remote):
+        return branch
+    await fetch_remote_branch(repo_root, remote, branch)
+    return target_ref
+
+
+async def has_remote(repo_root: Path, remote: str) -> bool:
+    try:
+        await run_git(["remote", "get-url", remote], cwd=repo_root)
+        return True
+    except GitCommandError:
+        return False
+
+
+async def fetch_remote_branch(repo_root: Path, remote: str, branch: str) -> None:
+    await run_git(["fetch", remote, branch], cwd=repo_root)
+
+
+def local_branch_name(ref: str) -> str:
+    return split_remote_ref(ref)[1]
+
+
+def split_remote_ref(ref: str) -> tuple[str | None, str]:
+    """"origin/main" -> ("origin", "main"); "main" -> (None, "main"). A remote name never contains a slash, so splitting on the first one is enough even for a branch name like "release/1.0"."""
+    remote, separator, branch = ref.partition("/")
+    return (remote, branch) if separator else (None, ref)
+
+
 async def create_worktree(repo_root: Path, branch: str, path: Path, base_branch: str) -> None:
     if path.exists():
         await verify_existing_worktree(path, branch)

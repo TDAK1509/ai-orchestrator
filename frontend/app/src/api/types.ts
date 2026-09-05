@@ -52,6 +52,12 @@ export interface Repository {
   created_at: string
 }
 
+export interface RepositoryInspection {
+  path: string
+  has_remote: boolean
+  default_target_branch: string
+}
+
 export interface DecisionOption {
   id?: string
   label: string

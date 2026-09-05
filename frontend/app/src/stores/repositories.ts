@@ -1,6 +1,6 @@
 import { defineStore } from "pinia"
 import { api } from "../api/client"
-import type { DirectoryEntry, Repository } from "../api/types"
+import type { DirectoryEntry, Repository, RepositoryInspection } from "../api/types"
 
 export const useRepositoriesStore = defineStore("repositories", {
   state: () => ({
@@ -22,6 +22,9 @@ export const useRepositoriesStore = defineStore("repositories", {
       const query = path ? `?path=${encodeURIComponent(path)}` : ""
       const { entries } = await api.get<{ entries: DirectoryEntry[] }>(`/filesystem/directory${query}`)
       return entries
+    },
+    async inspectRepository(path: string) {
+      return api.get<RepositoryInspection>(`/repositories/inspect?path=${encodeURIComponent(path)}`)
     },
   },
 })

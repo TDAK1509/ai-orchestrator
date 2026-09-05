@@ -6,12 +6,35 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db import commit
 from models.repository import Repository
-from runtime.worktree import GitCommandError, run_git
+from runtime.worktree import GitCommandError, has_remote, read_current_branch, run_git
 
 
 async def list_repositories(db: AsyncSession) -> list[Repository]:
     result = await db.execute(select(Repository).order_by(Repository.created_at))
     return list(result.scalars())
+
+
+async def inspect_repository(path: str) -> dict:
+    """PR 3: what the registration dialog needs before the user commits -- the branch to prefill (the remote's default when there is one, else whatever is checked out), and whether a remote exists at all, since that decides PR-versus-direct landing."""
+    toplevel = await verify_git_repository(path)
+    remote_exists = await has_remote(toplevel, "origin")
+    default_target_branch = await resolve_default_target_branch(toplevel, remote_exists)
+    return {"path": str(toplevel), "has_remote": remote_exists, "default_target_branch": default_target_branch}
+
+
+async def resolve_default_target_branch(toplevel: Path, remote_exists: bool) -> str:
+    if not remote_exists:
+        return await read_current_branch(toplevel)
+    branch = await resolve_remote_head_branch(toplevel)
+    return f"origin/{branch}" if branch else "origin/main"
+
+
+async def resolve_remote_head_branch(toplevel: Path) -> str | None:
+    try:
+        output = await run_git(["symbolic-ref", "refs/remotes/origin/HEAD"], cwd=toplevel)
+    except GitCommandError:
+        return None
+    return output.strip().rsplit("/", 1)[-1]
 
 
 async def create_repository(db: AsyncSession, path: str, name: str | None, default_target_branch: str) -> Repository:
