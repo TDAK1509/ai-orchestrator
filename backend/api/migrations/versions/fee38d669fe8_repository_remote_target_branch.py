@@ -22,4 +22,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(sa.text("UPDATE repositories SET default_target_branch = substr(default_target_branch, 8) WHERE default_target_branch LIKE 'origin/%'"))
+    raise RuntimeError(
+        "no downgrade: stripping 'origin/' from every matching row would also strip it from a row that "
+        "already had that prefix before this migration ran, which the upgrade never touched and this "
+        "migration has no record of distinguishing"
+    )

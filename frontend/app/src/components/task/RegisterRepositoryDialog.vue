@@ -13,10 +13,12 @@ const error = ref("")
 const registering = ref(false)
 const branchDraft = ref("")
 const hasRemote = ref<boolean | null>(null)
+const inspecting = ref(false)
 
 onMounted(() => browseTo(undefined))
 
 async function browseTo(path: string | undefined): Promise<void> {
+  resetInspection()
   loading.value = true
   error.value = ""
   try {
@@ -31,22 +33,28 @@ async function browseTo(path: string | undefined): Promise<void> {
 }
 
 async function inspectCurrentDirectory(): Promise<void> {
-  if (!currentPath.value) {
-    resetInspection()
-    return
-  }
+  const path = currentPath.value
+  if (!path) return
+  inspecting.value = true
   try {
-    const info = await repositories.inspectRepository(currentPath.value)
-    branchDraft.value = info.default_target_branch
-    hasRemote.value = info.has_remote
+    const info = await repositories.inspectRepository(path)
+    if (currentPath.value === path) applyInspection(info.default_target_branch, info.has_remote)
   } catch {
-    resetInspection()
+    if (currentPath.value === path) resetInspection()
+  } finally {
+    if (currentPath.value === path) inspecting.value = false
   }
+}
+
+function applyInspection(defaultTargetBranch: string, remoteFound: boolean): void {
+  branchDraft.value = defaultTargetBranch
+  hasRemote.value = remoteFound
 }
 
 function resetInspection(): void {
   branchDraft.value = ""
   hasRemote.value = null
+  inspecting.value = false
 }
 
 function goUp(): void {
@@ -102,7 +110,7 @@ async function registerCurrentDirectory(): Promise<void> {
         <button class="rounded border border-gray-300 px-3 py-1.5 text-sm" @click="$emit('close')">Cancel</button>
         <button
           class="rounded bg-blue-600 px-3 py-1.5 text-sm text-white disabled:opacity-50"
-          :disabled="!currentPath || !branchDraft || registering"
+          :disabled="!currentPath || !branchDraft || inspecting || registering"
           @click="registerCurrentDirectory"
         >
           Use this directory

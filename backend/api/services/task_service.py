@@ -166,8 +166,26 @@ async def assign_task(db, runtime_service: RuntimeService, repo_root: Path, task
     task.started_at = utcnow()
     agent.current_task_id = task.id
     if await claim_slot_or_queue(db, agent, policy.max_concurrent_agents):
-        await start_agent_on_task(db, runtime_service, repo_root, agent, task, policy)
+        await start_or_revert_assignment(db, runtime_service, repo_root, agent, task, policy)
     return task
+
+
+async def start_or_revert_assignment(db, runtime_service: RuntimeService, repo_root: Path, agent: Agent, task: Task, policy: TaskRuntimePolicy) -> None:
+    """PR 1: the pre-flight fetch does not guarantee the worktree's own fetch (a queued agent can be promoted long after) also succeeds -- a failure here must not leave the task IN_PROGRESS and the agent WORKING with no run behind either of them."""
+    try:
+        await start_agent_on_task(db, runtime_service, repo_root, agent, task, policy)
+    except Exception:
+        await revert_failed_assignment(db, agent, task)
+        raise
+
+
+async def revert_failed_assignment(db, agent: Agent, task: Task) -> None:
+    task.status = TaskStatus.BACKLOG
+    task.assignee_id = None
+    task.started_at = None
+    agent.current_task_id = None
+    agent.status = AgentStatus.IDLE
+    await commit(db)
 
 
 async def require_assignable(db, task: Task, agent: Agent, policy: TaskRuntimePolicy) -> None:
@@ -192,7 +210,7 @@ async def require_repo_ready_for_assignment(db, task: Task, policy: TaskRuntimeP
 
 async def require_direct_merge_ready(repo_root: Path, default_ref: str) -> None:
     """PR 4: the same branch check landing makes at merge time (runtime.landing.require_clean_checkout_of), run here before any work starts -- only reached when resolve_merge_type says this repository lands directly into its checkout. Dirtiness is transient, so it only warns; landing is still the one that refuses on it."""
-    target_branch = worktree_ops.local_branch_name(default_ref)
+    target_branch = await worktree_ops.local_branch_name_for(repo_root, default_ref)
     current_branch = await worktree_ops.read_current_branch(repo_root)
     if current_branch != target_branch:
         raise ValueError(f"{repo_root} is on {current_branch!r}, expected {target_branch!r}")
@@ -209,10 +227,10 @@ async def require_fresh_base(repo_root: Path, target_ref: str) -> None:
 
 
 async def resolve_merge_type(repo_root: Path, preferred: MergeType) -> MergeType:
-    """PR 2: a repository with no `origin` remote can't push a branch or open a PR -- land directly into its checkout instead, regardless of the workspace's preferred merge type."""
+    """PR 2: `gh pr create` only works against a GitHub remote -- a repository with none, or one whose `origin` points elsewhere (GitLab, Bitbucket, a local bare repo), lands directly into its checkout instead, regardless of the workspace's preferred merge type."""
     if preferred == MergeType.DIRECT:
         return MergeType.DIRECT
-    return MergeType.PR if await worktree_ops.has_remote(repo_root, "origin") else MergeType.DIRECT
+    return MergeType.PR if await worktree_ops.has_github_remote(repo_root, "origin") else MergeType.DIRECT
 
 
 async def start_agent_on_task(db, runtime_service: RuntimeService, repo_root: Path, agent: Agent, task: Task, policy: TaskRuntimePolicy) -> None:
@@ -318,7 +336,7 @@ async def land_or_block(db, agent: Agent, task: Task, task_worktree: TaskWorktre
 
 async def land_task(db, agent: Agent, task: Task, task_worktree: TaskWorktree, policy: TaskRuntimePolicy) -> TaskMerge:
     task_repo_root, default_ref = await resolve_task_repo_context(db, task)
-    target_branch = worktree_ops.local_branch_name(default_ref)
+    target_branch = await worktree_ops.local_branch_name_for(task_repo_root, default_ref)
     merge_type = await resolve_merge_type(task_repo_root, policy.merge_type)
     path = Path(task_worktree.path)
     landed_sha = await commit_task_worktree(path, f"{task.title}\n\nAgent Office task {task.id}")
