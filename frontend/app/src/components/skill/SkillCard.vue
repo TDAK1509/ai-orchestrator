@@ -9,12 +9,27 @@ const props = defineProps<{ skill: Skill }>()
 const agents = useAgentsStore()
 const skills = useSkillsStore()
 const expanded = ref(false)
+const nameDraft = ref(props.skill.name)
+const descriptionDraft = ref(props.skill.description ?? "")
 const instructionsDraft = ref(props.skill.instructions)
 const confirmingDelete = ref(false)
-const isGlobal = computed(() => props.skill.source === "global")
+const isImported = computed(() => props.skill.source === "imported")
 
-async function saveInstructions(): Promise<void> {
-  await skills.editSkill(props.skill.id, { instructions: instructionsDraft.value })
+function resetDrafts(): void {
+  nameDraft.value = props.skill.name
+  descriptionDraft.value = props.skill.description ?? ""
+  instructionsDraft.value = props.skill.instructions
+}
+
+function toggleExpanded(): void {
+  // A background sync can overwrite this skill's row while the card sits collapsed; re-read it on open
+  // so a Save right after expanding can't push stale drafts back over what the sync just wrote.
+  if (!expanded.value) resetDrafts()
+  expanded.value = !expanded.value
+}
+
+async function saveEdits(): Promise<void> {
+  await skills.editSkill(props.skill.id, { name: nameDraft.value, description: descriptionDraft.value, instructions: instructionsDraft.value })
 }
 
 function assignTo(agentId: string): void {
@@ -42,19 +57,20 @@ async function confirmDelete(): Promise<void> {
       <div>
         <div class="flex items-center gap-2">
           <p class="font-medium">{{ skill.name }}</p>
-          <span v-if="isGlobal" class="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-500">Global · read-only</span>
+          <span v-if="isImported" class="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-500">Imported from Claude Code</span>
         </div>
         <p class="text-sm text-gray-500">{{ skill.description }}</p>
       </div>
       <div class="flex gap-2 text-sm">
-        <button class="text-blue-600" @click="expanded = !expanded">{{ expanded ? "Collapse" : isGlobal ? "View" : "Edit" }}</button>
-        <button v-if="!isGlobal" class="text-red-600" @click="startDeleteConfirmation">Delete</button>
+        <button class="text-blue-600" @click="toggleExpanded">{{ expanded ? "Collapse" : "Edit" }}</button>
+        <button class="text-red-600" @click="startDeleteConfirmation">Delete</button>
       </div>
     </div>
-    <div v-if="expanded" class="mt-2">
-      <p v-if="isGlobal && skill.repository_path" class="mb-1 text-xs text-gray-400">{{ skill.repository_path }}</p>
-      <textarea v-model="instructionsDraft" rows="4" :readonly="isGlobal" class="w-full rounded border border-gray-300 px-2 py-1 text-sm" :class="{ 'bg-gray-50 text-gray-600': isGlobal }" />
-      <button v-if="!isGlobal" class="mt-1 rounded bg-blue-600 px-2 py-1 text-sm text-white" @click="saveInstructions">Save</button>
+    <div v-if="expanded" class="mt-2 space-y-1">
+      <input v-model="nameDraft" placeholder="Name" class="w-full rounded border border-gray-300 px-2 py-1 text-sm" />
+      <input v-model="descriptionDraft" placeholder="Description" class="w-full rounded border border-gray-300 px-2 py-1 text-sm" />
+      <textarea v-model="instructionsDraft" rows="4" class="w-full rounded border border-gray-300 px-2 py-1 text-sm" />
+      <button class="mt-1 rounded bg-blue-600 px-2 py-1 text-sm text-white" @click="saveEdits">Save</button>
     </div>
     <div v-if="confirmingDelete" class="mt-2 rounded border border-red-200 bg-red-50 p-2 text-sm">
       <p v-if="assignedAgents().length">

@@ -19,7 +19,6 @@ async def create_skill(db, name: str, description: str | None, instructions: str
 
 
 async def edit_skill(db, skill: Skill, name: str | None = None, description: str | None = None, instructions: str | None = None) -> Skill:
-    require_custom_skill(skill)
     apply_skill_edits(skill, name, description, instructions)
     skill.updated_at = utcnow()
     await commit(db)
@@ -36,7 +35,6 @@ def apply_skill_edits(skill: Skill, name: str | None, description: str | None, i
 
 
 async def delete_skill(db, skill: Skill) -> None:
-    require_custom_skill(skill)
     await delete_skill_assignments(db, skill.id)
     await db.delete(skill)
     await commit(db)
@@ -97,11 +95,6 @@ async def require_free_slug(db, slug: str) -> None:
     query = select(Skill.id).where(Skill.slug == slug)
     if (await db.execute(query)).first() is not None:
         raise ValueError(f"a skill with slug {slug!r} already exists")
-
-
-def require_custom_skill(skill: Skill) -> None:
-    if skill.source != SkillSource.CUSTOM:
-        raise ValueError(f"skill {skill.slug!r} is a global skill and cannot be edited or deleted from the UI")
 
 
 def require_nonempty_slug(name: str) -> str:

@@ -1,6 +1,6 @@
 import { defineStore } from "pinia"
 import { api, pathSegment } from "../api/client"
-import type { Agent, Skill } from "../api/types"
+import type { Agent, Skill, SkillImportSummary } from "../api/types"
 
 export const useSkillsStore = defineStore("skills", {
   state: () => ({
@@ -31,6 +31,11 @@ export const useSkillsStore = defineStore("skills", {
     async deleteSkill(id: string) {
       await api.delete(`/skills/${pathSegment(id)}`)
       this.removeById(id)
+    },
+    async importFromClaudeCode(): Promise<SkillImportSummary> {
+      const summary = await api.post<SkillImportSummary>("/skills/import")
+      this.skills = await api.get<Skill[]>("/skills")
+      return summary
     },
     async assignToAgent(skillId: string, agentId: string) {
       await api.post(`/skills/${pathSegment(skillId)}/assign/${pathSegment(agentId)}`)
