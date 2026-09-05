@@ -6,14 +6,35 @@ file and, optionally, a `metadata.json` file:
 ```text
 skills/
   <slug>/
-    SKILL.md          # the instructions text, inlined verbatim into an
-                       # assigned agent's first message
-    metadata.json      # optional: {"name": "...", "description": "..."}
+    SKILL.md          # the instructions text, inlined into an assigned
+                       # agent's first message
+    metadata.json      # optional override: {"name": "...", "description": "..."}
 ```
 
-The directory name is the skill's slug and its identity. `metadata.json`'s
-`name` and `description` fields are optional; when absent, the slug is used
-as the name and the description is left empty.
+The directory name is the skill's slug and its identity.
+
+`SKILL.md` may open with YAML front matter, the same shape Claude Code's own
+skills use:
+
+```text
+---
+name: minimal-scope-plan
+description: Plan a task as the smallest change that reaches the goal. Use when...
+---
+
+# Minimal scope plan
+...
+```
+
+The front matter supplies the name and description, and is **stripped from
+the instructions** before they reach an agent — that block addresses Claude
+Code's skill dispatcher, not the agent doing the work.
+
+Name and description resolve in this order: `metadata.json`, then the front
+matter, then the slug (name) and empty (description). `metadata.json` exists
+for the case where a skill is authored here rather than copied from a Claude
+Code skill directory, or where the catalog should show a different name from
+the one the file carries.
 
 ## Read-only, mirrored at startup
 

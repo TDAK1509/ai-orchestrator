@@ -63,12 +63,13 @@ def is_contained_skill_directory(root: Path, entry: Path, skill_md: Path) -> boo
 
 def build_global_skill_file(root: Path, entry: Path, skill_md: Path) -> GlobalSkillFile:
     metadata = read_metadata(root, entry / "metadata.json")
+    front_matter, instructions = split_front_matter(read_instructions(skill_md))
     slug = entry.name
     return GlobalSkillFile(
         slug=slug,
-        name=metadata.get("name") or slug,
-        description=metadata.get("description"),
-        instructions=read_instructions(skill_md),
+        name=metadata.get("name") or front_matter.get("name") or slug,
+        description=metadata.get("description") or front_matter.get("description"),
+        instructions=instructions,
         repository_path=f"skills/{slug}",
     )
 
@@ -81,6 +82,26 @@ def read_metadata(root: Path, path: Path) -> dict:
 
 def read_instructions(skill_md: Path) -> str:
     return skill_md.read_text() if skill_md.exists() else ""
+
+
+def split_front_matter(text: str) -> tuple[dict[str, str], str]:
+    """A SKILL.md authored for Claude Code carries name/description in YAML front matter. Strip it: read_instructions' result is inlined verbatim into an assigned agent's first message (README 32.3), and that block addresses Claude Code's skill dispatcher, not the agent."""
+    if not text.startswith("---\n"):
+        return {}, text
+    block, separator, body = text[4:].partition("\n---\n")
+    if not separator:
+        return {}, text
+    return parse_front_matter_fields(block), body.lstrip("\n")
+
+
+def parse_front_matter_fields(block: str) -> dict[str, str]:
+    """Top-level `key: value` lines only -- enough for name and description, and it keeps a YAML parser out of the dependency list. An indented or multi-line value is ignored, not half-read."""
+    fields = {}
+    for line in block.splitlines():
+        key, separator, value = line.partition(":")
+        if separator and not line.startswith((" ", "\t")):
+            fields[key.strip()] = value.strip()
+    return fields
 
 
 async def load_skills_by_slug(db) -> dict[str, Skill]:
