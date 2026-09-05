@@ -11,6 +11,13 @@ from models.skill import Skill, SkillSource
 
 DEFAULT_CLAUDE_SKILLS_DIR = Path.home() / ".claude" / "skills"
 MAX_SKILL_MD_BYTES = 1_000_000
+# allow-comment: a total across SKILL.md plus every inlined sibling (PR 3) -- a skill directory is not guaranteed to be small, so one file's cap isn't enough. Kept well below MAX_SKILL_MD_BYTES's ceiling: this text is inlined into every session an assigned agent starts, uncapped in aggregate across an agent's other skills, so one skill should stay a small slice of the prompt budget.
+MAX_SKILL_TOTAL_BYTES = 200_000
+BINARY_FILE_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".svg",
+    ".pdf", ".zip", ".tar", ".gz", ".woff", ".woff2", ".ttf", ".otf",
+    ".mp3", ".mp4", ".mov", ".wav", ".so", ".dylib", ".dll", ".exe", ".bin",
+}
 
 IMPORT_LOCK = asyncio.Lock()
 
@@ -21,6 +28,7 @@ class ImportedSkillFile:
     name: str
     description: str | None
     instructions: str
+    skipped_files: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -71,17 +79,66 @@ def read_claude_code_skill(entry: Path, skill_files: list[ImportedSkillFile], er
 
 
 def build_imported_skill_file(entry: Path, skill_md: Path, errors: list[str]) -> ImportedSkillFile | None:
-    if skill_md.stat().st_size > MAX_SKILL_MD_BYTES:
+    skill_md_size = skill_md.stat().st_size
+    if skill_md_size > MAX_SKILL_MD_BYTES:
         errors.append(f"{entry.name}: SKILL.md exceeds {MAX_SKILL_MD_BYTES} bytes, skipped")
         return None
+    return assemble_imported_skill_file(entry, skill_md, skill_md_size)
+
+
+def assemble_imported_skill_file(entry: Path, skill_md: Path, skill_md_size: int) -> ImportedSkillFile:
+    """A skipped sibling is informational, never fatal to the scan (unlike `errors` above): the migration that seeds the skills table on a fresh install aborts the whole scan on any entry in `errors`, and an oversized reference file must not take the rest of the catalog down with it."""
     front_matter, instructions = split_front_matter(skill_md.read_text())
+    skipped: list[str] = []
+    instructions = inline_sibling_files(entry, skill_md, skill_md_size, instructions, skipped)
+    return build_imported_skill_file_record(entry, front_matter, instructions, skipped)
+
+
+def build_imported_skill_file_record(entry: Path, front_matter: dict[str, str], instructions: str, skipped: list[str]) -> ImportedSkillFile:
     slug = entry.name
     return ImportedSkillFile(
         slug=slug,
         name=front_matter.get("name") or slug,
         description=front_matter.get("description"),
         instructions=instructions,
+        skipped_files=skipped,
     )
+
+
+def inline_sibling_files(entry: Path, skill_md: Path, skill_md_size: int, instructions: str, skipped: list[str]) -> str:
+    """A skill authored for Claude Code can tell an agent to read a file beside SKILL.md (e.g. `references/examples.md`) that no agent can reach -- inline it instead of leaving a dangling path (PR 3)."""
+    budget = MAX_SKILL_TOTAL_BYTES - skill_md_size
+    resolved_entry = entry.resolve()
+    siblings = sorted(path for path in entry.rglob("*") if path.is_file() and path != skill_md)
+    blocks = [instructions]
+    for sibling in siblings:
+        block, budget = read_sibling_block(sibling, entry, resolved_entry, budget, skipped)
+        if block is not None:
+            blocks.append(block)
+    return "\n\n".join(blocks)
+
+
+def read_sibling_block(sibling: Path, entry: Path, resolved_entry: Path, budget: int, skipped: list[str]) -> tuple[str | None, int]:
+    relative = sibling.relative_to(entry)
+    if not sibling.resolve().is_relative_to(resolved_entry):
+        skipped.append(f"{entry.name}: {relative} skipped, a symlink leading outside the skill directory")
+        return None, budget
+    if sibling.suffix.lower() in BINARY_FILE_EXTENSIONS:
+        return None, budget
+    size = sibling.stat().st_size
+    if size > budget:
+        skipped.append(f"{entry.name}: {relative} skipped, exceeds the {MAX_SKILL_TOTAL_BYTES}-byte total cap")
+        return None, budget
+    return read_sibling_text_block(sibling, relative, entry, size, budget, skipped)
+
+
+def read_sibling_text_block(sibling: Path, relative: Path, entry: Path, size: int, budget: int, skipped: list[str]) -> tuple[str | None, int]:
+    try:
+        text = sibling.read_text()
+    except (OSError, UnicodeDecodeError) as exc:
+        skipped.append(f"{entry.name}: {relative}: {exc}")
+        return None, budget
+    return f"## {relative}\n\n{text}", budget - size
 
 
 def split_front_matter(text: str) -> tuple[dict[str, str], str]:
@@ -109,6 +166,7 @@ async def load_skills_by_slug(db) -> dict[str, Skill]:
 
 
 def apply_imported_skill(db, existing: Skill | None, skill_file: ImportedSkillFile, summary: ImportSummary) -> None:
+    summary.skipped.extend(skill_file.skipped_files)
     if existing is None:
         skill = build_imported_skill(skill_file)
         db.add(skill)

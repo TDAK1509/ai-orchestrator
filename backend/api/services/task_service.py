@@ -77,9 +77,12 @@ class TaskRuntimePolicy:
 
 async def create_task(
     db, title: str, description: str | None = None, priority: TaskPriority = TaskPriority.MEDIUM,
-    repository_id: uuid.UUID | None = None,
+    repository_id: uuid.UUID | None = None, created_by_agent_id: uuid.UUID | None = None,
 ) -> Task:
-    task = Task(id=uuid.uuid4(), title=title, description=description, priority=priority, repository_id=repository_id)
+    task = Task(
+        id=uuid.uuid4(), title=title, description=description, priority=priority,
+        repository_id=repository_id, created_by_agent_id=created_by_agent_id,
+    )
     db.add(task)
     await commit(db)
     return task
@@ -94,6 +97,7 @@ async def edit_task(db, task: Task, body, fields_set: set[str]) -> Task:
 async def apply_task_edits(db, task: Task, body, fields_set: set[str]) -> None:
     reject_null_required_field(body, fields_set, "title")
     reject_null_required_field(body, fields_set, "priority")
+    reject_null_required_field(body, fields_set, "repository_id")
     if "repository_id" in fields_set and body.repository_id != task.repository_id:
         await require_no_worktree(db, task)
     for field in ("title", "description", "priority", "repository_id"):
@@ -108,19 +112,19 @@ async def require_no_worktree(db, task: Task) -> None:
         raise ValueError(f"task {task.id} already has a worktree ({worktree.path}); repository cannot be changed")
 
 
-async def archive_task(db, runtime_service: RuntimeService, repo_root: Path, task: Task) -> Task:
+async def archive_task(db, runtime_service: RuntimeService, task: Task) -> Task:
     """Archive, never delete (six tables FK tasks.id): the task and its worktree row both survive, marked retired instead of gone."""
-    agent, resolved_events = await teardown_task_for_archive(db, runtime_service, repo_root, task)
+    agent, resolved_events = await teardown_task_for_archive(db, runtime_service, task)
     task.status = TaskStatus.ARCHIVED
     await commit(db)
     publish_task_archived(task, agent, resolved_events)
     return task
 
 
-async def teardown_task_for_archive(db, runtime_service: RuntimeService, repo_root: Path, task: Task) -> tuple[Agent | None, list[AttentionEvent]]:
+async def teardown_task_for_archive(db, runtime_service: RuntimeService, task: Task) -> tuple[Agent | None, list[AttentionEvent]]:
     await cancel_pending_decisions_for_task(db, task.id)
     agent = await stop_and_release_task_agent(db, runtime_service, task)
-    await remove_task_worktree(db, repo_root, task)
+    await remove_task_worktree(db, task)
     resolved_events = await resolve_open_task_attention(db, task.id)
     return agent, resolved_events
 
@@ -157,7 +161,7 @@ async def stop_and_release_task_agent(db, runtime_service: RuntimeService, task:
 
 
 async def assign_task(db, runtime_service: RuntimeService, repo_root: Path, task: Task, agent: Agent, policy: TaskRuntimePolicy) -> Task:
-    require_assignable(task, agent)
+    await require_assignable(db, task, agent)
     task.assignee_id = agent.id
     task.status = TaskStatus.IN_PROGRESS
     task.started_at = utcnow()
@@ -167,7 +171,7 @@ async def assign_task(db, runtime_service: RuntimeService, repo_root: Path, task
     return task
 
 
-def require_assignable(task: Task, agent: Agent) -> None:
+async def require_assignable(db, task: Task, agent: Agent) -> None:
     """A repeat assignment must not spawn a second runtime for the same worktree (README Rule 5: one primary task per agent), and a slot-count that only ever counts distinct WORKING agents can't catch that on its own."""
     if task.status != TaskStatus.BACKLOG:
         raise ValueError(f"task {task.id} is not assignable (status={task.status.value})")
@@ -175,11 +179,24 @@ def require_assignable(task: Task, agent: Agent) -> None:
         raise ValueError(f"agent {agent.id} is not active")
     if agent.status != AgentStatus.IDLE:
         raise ValueError(f"agent {agent.id} is not idle (status={agent.status.value})")
+    await require_repo_ready_for_assignment(db, task)
+
+
+async def require_repo_ready_for_assignment(db, task: Task) -> None:
+    """PR 4: the same branch check landing makes at merge time (runtime.landing.require_clean_checkout_of), run here before any work starts -- a wrong branch fails assignment in seconds instead of after a full run. Dirtiness is transient, so it only warns; landing is still the one that refuses on it."""
+    repository = await resolve_task_repository(db, task)
+    repo_root = resolve_repo_root(repository)
+    target_branch = resolve_base_branch(repository)
+    current_branch = await worktree_ops.read_current_branch(repo_root)
+    if current_branch != target_branch:
+        raise ValueError(f"{repo_root} is on {current_branch!r}, expected {target_branch!r}")
+    if await worktree_ops.has_staged_changes(repo_root):
+        logger.warning("repository %s is dirty (expected clean on %r); assignment allowed, landing will refuse until it is clean", repo_root, target_branch)
 
 
 async def start_agent_on_task(db, runtime_service: RuntimeService, repo_root: Path, agent: Agent, task: Task, policy: TaskRuntimePolicy) -> None:
     """Assumes the caller already claimed agent's WORKING slot; only spawns and hands the run to a background driver."""
-    task_repo_root, base_branch = await resolve_task_repo_context(db, repo_root, policy.base_branch, task)
+    task_repo_root, base_branch = await resolve_task_repo_context(db, task)
     task_worktree = await ensure_task_worktree(db, task_repo_root, task, base_branch)
     allowed_servers = await resolve_agent_mcp_servers(db, task_repo_root, agent)
     message = await build_initial_message(db, agent, task, task_repo_root, allowed_servers)
@@ -187,10 +204,10 @@ async def start_agent_on_task(db, runtime_service: RuntimeService, repo_root: Pa
     schedule_run_completion(runtime_service, repo_root, agent.id, task.id, task_worktree.id, run.id, policy)
 
 
-async def resolve_task_repo_context(db, repo_root: Path, default_branch: str, task: Task) -> tuple[Path, str]:
-    """A2: a task assigned a Repository (README 14) runs against that repository and its default branch, not the workspace's injected default."""
+async def resolve_task_repo_context(db, task: Task) -> tuple[Path, str]:
+    """A2/PR 4: every task has a repository (README 14) -- resolve its checkout path and default branch, no workspace-default fallback left."""
     repository = await resolve_task_repository(db, task)
-    return resolve_repo_root(repository, repo_root), resolve_base_branch(repository, default_branch)
+    return resolve_repo_root(repository), resolve_base_branch(repository)
 
 
 async def resolve_agent_mcp_servers(db, repo_root: Path, agent: Agent) -> list[McpServerRef]:
@@ -207,7 +224,7 @@ async def finish_task_run(db, runtime_service: RuntimeService, repo_root: Path, 
 
 async def finish_in_progress_run(db, runtime_service: RuntimeService, repo_root: Path, agent: Agent, task: Task, task_worktree: TaskWorktree, run: ExecutionRun, policy: TaskRuntimePolicy) -> None:
     if run.status == RunStatus.COMPLETED:
-        await land_or_block(db, agent, task, task_worktree, repo_root, policy)
+        await land_or_block(db, agent, task, task_worktree, policy)
     elif run.status in (RunStatus.INTERRUPTED, RunStatus.KILLED):
         # allow-comment: B2's deliberate Stop ends the same way an unplanned interruption does (codex P1) -- the process is gone either way, and the task needs the same up-to-3-attempt resume, not an immediate permanent failure.
         await handle_interrupted_run(db, runtime_service, repo_root, agent, task, task_worktree, run, policy)
@@ -238,7 +255,7 @@ async def attempt_resume_spawn(db, runtime_service: RuntimeService, repo_root: P
     try:
         if agent_session.claude_session_id:
             return await resume_with_session_id(db, runtime_service, repo_root, agent, task, task_worktree, agent_session, policy)
-        return await resume_from_checkpoint(db, runtime_service, repo_root, agent, task, task_worktree, agent_session, policy)
+        return await resume_from_checkpoint(db, runtime_service, agent, task, task_worktree, agent_session, policy)
     except Exception:
         logger.exception("resume attempt failed for agent session %s", agent_session.id)
         return False
@@ -251,42 +268,48 @@ async def resume_with_session_id(db, runtime_service: RuntimeService, repo_root:
 
 async def resume_agent_session(db, runtime_service: RuntimeService, repo_root: Path, agent: Agent, task: Task, task_worktree: TaskWorktree, agent_session: AgentSession, policy: TaskRuntimePolicy, prompt_text: str) -> ExecutionRun:
     """Shared by the crash-resume loop above, a human message to the agent (PR 1), and a task retry (PR 2) -- only prompt_text differs between callers."""
-    task_repo_root, _ = await resolve_task_repo_context(db, repo_root, policy.base_branch, task)
+    task_repo_root, _ = await resolve_task_repo_context(db, task)
     allowed_servers = await resolve_agent_mcp_servers(db, task_repo_root, agent)
     run = await runtime_service.resume(agent, agent_session, task_worktree, allowed_servers, prompt_text)
     schedule_run_completion(runtime_service, repo_root, agent.id, task.id, task_worktree.id, run.id, policy)
     return run
 
 
-async def resume_from_checkpoint(db, runtime_service: RuntimeService, repo_root: Path, agent: Agent, task: Task, task_worktree: TaskWorktree, agent_session: AgentSession, policy: TaskRuntimePolicy) -> bool:
+async def resume_from_checkpoint(db, runtime_service: RuntimeService, agent: Agent, task: Task, task_worktree: TaskWorktree, agent_session: AgentSession, policy: TaskRuntimePolicy) -> bool:
     """No claude_session_id survived the crash (Phase 0.2's stdin loss, or a crash before system/init): fall back to a fresh session seeded with the newest unused checkpoint, the same pattern session_rotation_service already uses for a deliberate rotation (B2.7)."""
     checkpoint = await find_latest_unused_checkpoint(db, agent.id, task.id)
     if checkpoint is None:
         return False
-    task_repo_root, _ = await resolve_task_repo_context(db, repo_root, policy.base_branch, task)
+    task_repo_root, _ = await resolve_task_repo_context(db, task)
     allowed_servers = await resolve_agent_mcp_servers(db, task_repo_root, agent)
     await rotate_session(db, runtime_service, task_repo_root, agent, task, task_worktree, agent_session, checkpoint, allowed_servers, policy)
     return True
 
 
-async def land_or_block(db, agent: Agent, task: Task, task_worktree: TaskWorktree, repo_root: Path, policy: TaskRuntimePolicy) -> None:
+async def land_or_block(db, agent: Agent, task: Task, task_worktree: TaskWorktree, policy: TaskRuntimePolicy) -> None:
     try:
-        await land_task(db, agent, task, task_worktree, repo_root, policy)
+        await land_task(db, agent, task, task_worktree, policy)
     except Exception as error:  # noqa: BLE001 - a landing failure must block the task, not vanish in a background task
         await block_on_landing_failure(db, agent, task, error)
         return
     await release_agent(db, agent)
 
 
-async def land_task(db, agent: Agent, task: Task, task_worktree: TaskWorktree, repo_root: Path, policy: TaskRuntimePolicy) -> TaskMerge:
-    task_repo_root, target_branch = await resolve_task_repo_context(db, repo_root, policy.target_branch, task)
+async def land_task(db, agent: Agent, task: Task, task_worktree: TaskWorktree, policy: TaskRuntimePolicy) -> TaskMerge:
+    task_repo_root, target_branch = await resolve_task_repo_context(db, task)
     path = Path(task_worktree.path)
-    landed_sha = await worktree_ops.commit_worktree(path, f"{task.title}\n\nAgent Office task {task.id}")
+    landed_sha = await commit_task_worktree(path, f"{task.title}\n\nAgent Office task {task.id}")
     if policy.merge_type == MergeType.PR:
         await worktree_ops.push_worktree(path, task_worktree.branch)
     merge = await record_landed_merge(db, task, task_worktree, task_repo_root, target_branch, policy)
     await extract_completion_memories_safely(db, agent, task, task_worktree.branch, landed_sha)
     return merge
+
+
+async def commit_task_worktree(path: Path, message: str) -> str | None:
+    """PR 2: land only what the task produced -- never `add -A`, which would sweep in scratch and half-finished edits the agent left behind."""
+    paths = await worktree_ops.resolve_paths_to_commit(path)
+    return await worktree_ops.commit_paths(path, paths, message)
 
 
 async def record_landed_merge(db, task: Task, task_worktree: TaskWorktree, repo_root: Path, target_branch: str, policy: TaskRuntimePolicy) -> TaskMerge:

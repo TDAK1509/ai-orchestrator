@@ -17,10 +17,10 @@ const submitting = ref(false)
 const showRegisterRepository = ref(false)
 
 async function submit(onDone: () => void): Promise<void> {
-  if (!title.value) return
+  if (!title.value || !repositoryId.value) return
   submitting.value = true
   try {
-    await tasks.createTask(title.value, description.value || undefined, priority.value, repositoryId.value || undefined)
+    await tasks.createTask(title.value, description.value || undefined, priority.value, repositoryId.value)
     onDone()
   } finally {
     submitting.value = false
@@ -55,7 +55,7 @@ function onRepositoryRegistered(newRepositoryId: string): void {
         <button type="button" class="text-xs font-normal text-blue-600" @click="showRegisterRepository = true">+ Register a repository</button>
       </label>
       <select v-model="repositoryId" class="mt-1 w-full rounded border border-gray-300 px-2 py-1">
-        <option value="">Workspace default</option>
+        <option value="" disabled>Select a repository...</option>
         <option v-for="repository in repositories.repositories" :key="repository.id" :value="repository.id">
           {{ repository.name }}
         </option>
@@ -64,7 +64,7 @@ function onRepositoryRegistered(newRepositoryId: string): void {
         <button class="rounded border border-gray-300 px-3 py-1.5 text-sm" @click="$emit('close')">Cancel</button>
         <button
           class="rounded bg-blue-600 px-3 py-1.5 text-sm text-white disabled:opacity-50"
-          :disabled="!title || submitting"
+          :disabled="!title || !repositoryId || submitting"
           @click="submit(() => $emit('close'))"
         >
           Create Task

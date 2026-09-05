@@ -17,7 +17,7 @@ const submitting = ref(false)
 const error = ref("")
 
 async function submit(): Promise<void> {
-  if (!title.value) return
+  if (!title.value || !repositoryId.value) return
   submitting.value = true
   error.value = ""
   try {
@@ -25,7 +25,7 @@ async function submit(): Promise<void> {
       title: title.value,
       description: description.value || null,
       priority: priority.value,
-      repository_id: repositoryId.value || null,
+      repository_id: repositoryId.value,
     })
     emit("close")
   } catch (err) {
@@ -55,7 +55,7 @@ async function submit(): Promise<void> {
       </select>
       <label class="mt-3 block text-sm font-medium">Repository</label>
       <select v-model="repositoryId" class="mt-1 w-full rounded border border-gray-300 px-2 py-1">
-        <option value="">Workspace default</option>
+        <option value="" disabled>Select a repository...</option>
         <option v-for="repository in repositories.repositories" :key="repository.id" :value="repository.id">
           {{ repository.name }}
         </option>
@@ -63,7 +63,11 @@ async function submit(): Promise<void> {
       <p v-if="error" class="mt-2 text-sm text-red-600">{{ error }}</p>
       <div class="mt-4 flex justify-end gap-2">
         <button class="rounded border border-gray-300 px-3 py-1.5 text-sm" @click="$emit('close')">Cancel</button>
-        <button class="rounded bg-blue-600 px-3 py-1.5 text-sm text-white disabled:opacity-50" :disabled="!title || submitting" @click="submit">
+        <button
+          class="rounded bg-blue-600 px-3 py-1.5 text-sm text-white disabled:opacity-50"
+          :disabled="!title || !repositoryId || submitting"
+          @click="submit"
+        >
           Save
         </button>
       </div>

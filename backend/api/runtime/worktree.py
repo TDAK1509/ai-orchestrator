@@ -4,6 +4,7 @@ from pathlib import Path
 from .process import build_subprocess_env
 
 NO_HOOKS_ARGS = ["-c", "core.hooksPath=/dev/null"]
+SCRATCH_IGNORE_LINE = ".scratch/"
 
 
 class GitCommandError(RuntimeError):
@@ -22,12 +23,36 @@ class WorktreeMismatchError(RuntimeError):
 async def create_worktree(repo_root: Path, branch: str, path: Path, base_branch: str) -> None:
     if path.exists():
         await verify_existing_worktree(path, branch)
-        return
+    else:
+        await create_new_worktree(repo_root, branch, path, base_branch)
+    await ensure_scratch_ignored(path)
+
+
+async def create_new_worktree(repo_root: Path, branch: str, path: Path, base_branch: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     await run_git(
         ["worktree", "add", "-b", branch, str(path), base_branch],
         cwd=repo_root,
     )
+
+
+async def ensure_scratch_ignored(path: Path) -> None:
+    """Gives agents somewhere to put scratch work that never lands in a commit (PR 2): `info/exclude` lives in the repo's shared git-common-dir, so this one write covers every worktree, not just this one."""
+    exclude_file = await resolve_exclude_file(path)
+    append_scratch_ignore_line(exclude_file)
+
+
+async def resolve_exclude_file(path: Path) -> Path:
+    common_dir = await run_git(["rev-parse", "--git-common-dir"], cwd=path)
+    return (path / common_dir.strip()).resolve() / "info" / "exclude"
+
+
+def append_scratch_ignore_line(exclude_file: Path) -> None:
+    if exclude_file.exists() and SCRATCH_IGNORE_LINE in exclude_file.read_text().splitlines():
+        return
+    exclude_file.parent.mkdir(parents=True, exist_ok=True)
+    with exclude_file.open("a") as handle:
+        handle.write(f"{SCRATCH_IGNORE_LINE}\n")
 
 
 async def verify_existing_worktree(path: Path, branch: str) -> None:
@@ -49,16 +74,31 @@ async def push_worktree(path: Path, branch: str, remote: str = "origin") -> None
     await run_git(["push", "-u", remote, branch], cwd=path)
 
 
-async def commit_worktree(path: Path, message: str) -> str | None:
-    await run_git(["add", "-A"], cwd=path)
-    return await commit_if_staged(path, message)
-
-
 async def commit_paths(path: Path, relative_paths: list[str], message: str) -> str | None:
-    """Never `add -A`: the caller is committing on our own behalf (README 19.3), not staging agent-written files it hasn't chosen."""
-    for relative_path in relative_paths:
-        await run_git(["add", relative_path], cwd=path)
+    """Never `add -A`: the caller is committing on our own behalf (README 19.3), not staging agent-written files it hasn't chosen. One `git add` call behind `--`, not one per path: a filename starting with `-` can't be read as an option, and staging is O(1) subprocesses instead of O(paths)."""
+    if relative_paths:
+        await run_git(["add", "--", *relative_paths], cwd=path)
     return await commit_if_staged(path, message)
+
+
+async def resolve_paths_to_commit(path: Path) -> list[str]:
+    """Tracked modifications plus untracked-and-not-ignored files (PR 2): what `git add -A` would stage minus whatever `.gitignore` -- including the worktree's `.scratch/` -- excludes."""
+    return await list_modified_paths(path) + await list_untracked_paths(path)
+
+
+async def list_modified_paths(path: Path) -> list[str]:
+    output = await run_git(["diff", "--name-only", "-z", "HEAD"], cwd=path)
+    return split_nul_delimited(output)
+
+
+async def list_untracked_paths(path: Path) -> list[str]:
+    output = await run_git(["ls-files", "--others", "--exclude-standard", "-z"], cwd=path)
+    return split_nul_delimited(output)
+
+
+def split_nul_delimited(output: str) -> list[str]:
+    """`-z`-terminated git output, not newline-split: a path containing a literal newline stays one entry instead of splitting into two."""
+    return [entry for entry in output.split("\0") if entry]
 
 
 async def commit_if_staged(path: Path, message: str) -> str | None:

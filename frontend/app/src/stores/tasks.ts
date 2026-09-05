@@ -14,7 +14,7 @@ export const useTasksStore = defineStore("tasks", {
     async fetchTasks() {
       this.tasks = await api.get<Task[]>("/tasks")
     },
-    async createTask(title: string, description: string | undefined, priority: TaskPriority, repositoryId: string | undefined) {
+    async createTask(title: string, description: string | undefined, priority: TaskPriority, repositoryId: string) {
       const task = await api.post<Task>("/tasks", { title, description, priority, repository_id: repositoryId })
       this.upsert(task)
       return task
@@ -28,6 +28,20 @@ export const useTasksStore = defineStore("tasks", {
       const task = await api.patch<Task>(`/tasks/${taskId}`, patch)
       this.upsert(task)
       return task
+    },
+    async bulkArchive(taskIds: string[]) {
+      const failedTaskIds: string[] = []
+      for (const taskId of taskIds) {
+        await this.archiveOneOfMany(taskId, failedTaskIds)
+      }
+      return failedTaskIds
+    },
+    async archiveOneOfMany(taskId: string, failedTaskIds: string[]) {
+      try {
+        await this.archiveTask(taskId)
+      } catch {
+        failedTaskIds.push(taskId)
+      }
     },
     async archiveTask(taskId: string) {
       const task = await api.post<Task>(`/tasks/${taskId}/archive`)

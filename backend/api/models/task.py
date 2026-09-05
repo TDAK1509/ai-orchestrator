@@ -42,9 +42,12 @@ class Task(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     assignee_id: Mapped[uuid.UUID | None] = mapped_column(
         GUID(), ForeignKey("agents.id"), nullable=True
     )
-    # allow-comment: NULL means "cut the worktree from AGENT_OFFICE_REPO_ROOT", the only behavior that existed before this column -- every task created before A2 keeps working untouched.
-    repository_id: Mapped[uuid.UUID | None] = mapped_column(
-        GUID(), ForeignKey("repositories.id"), nullable=True, index=True
+    # allow-comment: nullable -- a human-created task leaves this NULL; only a task an agent files with the create_task tool (PR 5) sets it.
+    created_by_agent_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("agents.id"), nullable=True, index=True
+    )
+    repository_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("repositories.id"), nullable=False, index=True
     )
 
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
