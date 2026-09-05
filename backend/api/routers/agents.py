@@ -20,6 +20,7 @@ from services.agent_service import (
     restore_agent,
     stop_agent,
 )
+from services.skill_service import list_agent_skills
 from services.task_service import send_message_to_agent
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -86,6 +87,12 @@ def require_all_found(skill_ids: list[uuid.UUID], found: dict[uuid.UUID, Skill])
 async def get_agent_route(agent_id: uuid.UUID, db=Depends(get_db)):
     agent = await get_or_404(db, Agent, agent_id, "agent")
     return serialize(agent)
+
+
+@router.get("/{agent_id}/skills")
+async def list_agent_skills_route(agent_id: uuid.UUID, db=Depends(get_db)):
+    await get_or_404(db, Agent, agent_id, "agent")
+    return [serialize(skill) for skill in await list_agent_skills(db, agent_id)]
 
 
 @router.patch("/{agent_id}")

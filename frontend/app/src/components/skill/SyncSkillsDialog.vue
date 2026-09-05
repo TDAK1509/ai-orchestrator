@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue"
+import { computed, onMounted, ref } from "vue"
 import type { Skill, SkillAvailableEntry, SkillImportSummary } from "../../api/types"
 import { useSkillsStore } from "../../stores/skills"
+import SkillCheckboxList from "./SkillCheckboxList.vue"
 import SkillRemovalWarning from "./SkillRemovalWarning.vue"
 
 const emit = defineEmits<{ close: []; synced: [summary: SkillImportSummary] }>()
@@ -29,6 +30,10 @@ function toggle(slug: string): void {
   if (ticked.value.has(slug)) ticked.value.delete(slug)
   else ticked.value.add(slug)
 }
+
+const checklistItems = computed(() =>
+  entries.value.map((entry) => ({ key: entry.slug, label: entry.name, suffix: entry.on_disk ? undefined : "(missing)" })),
+)
 
 function selectAll(): void {
   ticked.value = new Set(entries.value.map((entry) => entry.slug))
@@ -120,13 +125,7 @@ async function runSync(): Promise<void> {
           <button class="text-blue-600" @click="selectAll">All</button>
           <button class="text-blue-600" @click="selectNone">None</button>
         </div>
-        <div class="mt-2 max-h-72 space-y-1 overflow-y-auto">
-          <label v-for="entry in entries" :key="entry.slug" class="flex items-center gap-2 text-sm">
-            <input type="checkbox" :checked="ticked.has(entry.slug)" @change="toggle(entry.slug)" />
-            <span>{{ entry.name }}</span>
-            <span v-if="!entry.on_disk" class="text-xs text-amber-600">(missing)</span>
-          </label>
-        </div>
+        <SkillCheckboxList class="mt-2" :items="checklistItems" :ticked="ticked" @toggle="toggle" />
         <p v-if="error" class="mt-2 text-sm text-red-600">{{ error }}</p>
         <div class="mt-4 flex justify-end gap-2">
           <button class="rounded border border-gray-300 px-3 py-1.5 text-sm" @click="$emit('close')">Cancel</button>
