@@ -21,6 +21,14 @@ export AGENT_OFFICE_RUNTIME_ROOT := $(CURDIR)/.agent-office/runtime
 export ALEMBIC := $(VENV)/bin/alembic
 export UVICORN := $(VENV)/bin/uvicorn
 
+# `?=` so a value in .env wins (it is included above). The browser resolves
+# VITE_API_BASE_URL, not the backend, so it must name a port reachable from wherever
+# the page is open -- over an ssh -L tunnel that is the same number on both ends.
+AGENT_OFFICE_API_PORT ?= 8000
+export AGENT_OFFICE_API_PORT
+VITE_API_BASE_URL ?= http://localhost:$(AGENT_OFFICE_API_PORT)
+export VITE_API_BASE_URL
+
 # GNU make remakes an out-of-date included file and then restarts itself, so a .env
 # created here is loaded before any recipe runs. No prerequisite: this fires only when
 # .env is absent, never to compare it against .env.example.

@@ -37,6 +37,8 @@ Behind the interface, the system must run real Claude Code processes in isolated
 
 `.env` is created automatically, from `.env.example`, the first time any `make` target runs on a fresh checkout — not only `install` or `db`. GNU Make remakes a missing included file before evaluating whichever target you asked for, and even a dry run (`make -n <target>`) does this for real.
 
+The backend binds `AGENT_OFFICE_API_PORT` (default 8000); set it in `.env` when something else already owns that port. The frontend follows automatically — the Makefile derives `VITE_API_BASE_URL` from it — because the browser, not the backend, resolves that URL. Set `VITE_API_BASE_URL` yourself only when the API is reachable at a different host or port from the browser than it is from this machine.
+
 The first `make start` is slow: the backend downloads its embedding model (~50MB) before it serves its first request. That is expected, not a hang.
 
 `make stop` and `make clean` only touch the database (`clean` also deletes its volume). Stop the backend and frontend with Ctrl-C on the terminal running `make start`.
