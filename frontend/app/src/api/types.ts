@@ -93,8 +93,17 @@ export type SkillSource = "imported" | "custom"
 export interface SkillImportSummary {
   created: string[]
   updated: string[]
+  removed: string[]
+  unassigned: { slug: string; agents: string[] }[]
   skipped: string[]
   errors: string[]
+}
+
+export interface SkillAvailableEntry {
+  slug: string
+  name: string
+  in_catalog: boolean
+  on_disk: boolean
 }
 
 export interface Skill {

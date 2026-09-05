@@ -3,6 +3,7 @@ import { computed, ref } from "vue"
 import type { Skill } from "../../api/types"
 import { useAgentsStore } from "../../stores/agents"
 import { useSkillsStore } from "../../stores/skills"
+import SkillRemovalWarning from "./SkillRemovalWarning.vue"
 
 const props = defineProps<{ skill: Skill }>()
 
@@ -73,10 +74,7 @@ async function confirmDelete(): Promise<void> {
       <button class="mt-1 rounded bg-blue-600 px-2 py-1 text-sm text-white" @click="saveEdits">Save</button>
     </div>
     <div v-if="confirmingDelete" class="mt-2 rounded border border-red-200 bg-red-50 p-2 text-sm">
-      <p v-if="assignedAgents().length">
-        Assigned to {{ assignedAgents().map((a) => a.name).join(", ") }}. They will lose this skill.
-      </p>
-      <p v-else>No agents are assigned to this skill.</p>
+      <SkillRemovalWarning :agent-names="assignedAgents().map((a) => a.name)" />
       <div class="mt-2 flex gap-2">
         <button class="rounded bg-red-600 px-2 py-1 text-white" @click="confirmDelete">Delete Skill</button>
         <button class="rounded border border-gray-300 px-2 py-1" @click="confirmingDelete = false">Cancel</button>
