@@ -20,6 +20,7 @@ import { useAttentionStore } from "./stores/attention"
 import { useMcpStore } from "./stores/mcp"
 import { useMeetingsStore } from "./stores/meetings"
 import { useMemoryStore } from "./stores/memory"
+import { useRepositoriesStore } from "./stores/repositories"
 import { useRoomsStore } from "./stores/rooms"
 import { useSkillsStore } from "./stores/skills"
 import { useTasksStore } from "./stores/tasks"
@@ -35,6 +36,7 @@ const rooms = useRoomsStore()
 const meetings = useMeetingsStore()
 const activity = useActivityStore()
 const teams = useTeamsStore()
+const repositories = useRepositoriesStore()
 
 const selectedAgent = ref<Agent | null>(null)
 const showCreateTask = ref(false)
@@ -66,6 +68,7 @@ async function loadSnapshots(): Promise<void> {
     rooms.fetchRooms(),
     meetings.fetchMeetings(),
     teams.fetchTeams(),
+    repositories.fetchRepositories(),
   ])
   await Promise.all(meetings.active.map((meeting) => meetings.fetchMessages(meeting.id)))
 }

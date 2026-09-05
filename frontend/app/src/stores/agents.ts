@@ -38,6 +38,9 @@ export const useAgentsStore = defineStore("agents", {
       this.upsert(agent)
       return agent
     },
+    async stopAgent(id: string) {
+      return api.post<{ stopped: boolean }>(`/agents/${id}/stop`)
+    },
     upsert(agent: Agent) {
       const index = this.agents.findIndex((existing) => existing.id === agent.id)
       if (index === -1) this.agents.push(agent)

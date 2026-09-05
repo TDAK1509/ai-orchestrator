@@ -24,6 +24,7 @@ from .memory import (
     MemoryType,
 )
 from .merge import MergeType, PrStatus, TaskMerge
+from .repository import Repository
 from .room import Room, RoomType
 from .session import AgentSession, BoundVia, ExecutionRun, RunStatus
 from .skill import AgentSkillAssignment, Skill
@@ -62,6 +63,7 @@ __all__ = [
     "MemoryType",
     "MergeType",
     "PrStatus",
+    "Repository",
     "Room",
     "RoomType",
     "RunStatus",

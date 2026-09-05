@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue"
+import { computed, onMounted, onUnmounted, ref } from "vue"
 import type { Agent, AgentEffort } from "../../api/types"
 import { useActivityStore } from "../../stores/activity"
 import { useAgentsStore } from "../../stores/agents"
 import { useAttentionStore } from "../../stores/attention"
 import { useMemoryStore } from "../../stores/memory"
+import { useRepositoriesStore } from "../../stores/repositories"
 import { useTasksStore } from "../../stores/tasks"
 import { useTeamsStore } from "../../stores/teams"
 import DecisionPanel from "./DecisionPanel.vue"
@@ -18,9 +19,11 @@ const attention = useAttentionStore()
 const activity = useActivityStore()
 const memory = useMemoryStore()
 const teams = useTeamsStore()
+const repositories = useRepositoriesStore()
 const confirmingFire = ref(false)
 
 const currentTask = computed(() => (props.agent.current_task_id ? tasks.byId(props.agent.current_task_id) : undefined))
+const currentTaskRepository = computed(() => (currentTask.value?.repository_id ? repositories.byId(currentTask.value.repository_id) : undefined))
 const decision = computed(() => attention.decisionForAgent(props.agent.id))
 const recentActivity = computed(() => activity.forAgent(props.agent.id).slice().reverse())
 const agentMemories = computed(() => memory.agentMemoriesByAgentId[props.agent.id] ?? [])
@@ -28,12 +31,30 @@ const team = computed(() => (props.agent.team_id ? teams.byId(props.agent.team_i
 
 onMounted(() => {
   memory.fetchAgentMemories(props.agent.id)
+  window.addEventListener("keydown", handleKeydown)
 })
+
+onUnmounted(() => {
+  window.removeEventListener("keydown", handleKeydown)
+})
+
+function handleKeydown(event: KeyboardEvent): void {
+  if (event.key === "Escape" && props.agent.status === "working") stopAgent()
+}
 
 async function confirmFire(): Promise<void> {
   await agentsStore.fireAgent(props.agent.id)
   confirmingFire.value = false
 }
+
+async function stopAgent(): Promise<void> {
+  await agentsStore.stopAgent(props.agent.id)
+}
+
+// B4: README 18 specifies [Overview] [Memory] [Skills & MCP] for a future config tab this sheet doesn't
+// build yet -- Activity takes that third slot until Skills & MCP has content of its own to show.
+const TABS = ["Overview", "Activity", "Memory"] as const
+const activeTab = ref<(typeof TABS)[number]>("Overview")
 
 const MODEL_OPTIONS = ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5", "claude-fable-5-1"]
 const EFFORT_OPTIONS = ["low", "medium", "high", "xhigh", "max"]
@@ -69,67 +90,89 @@ async function saveRuntime(): Promise<void> {
       <button class="text-gray-400 hover:text-gray-600" @click="$emit('close')">✕</button>
     </div>
 
-    <p class="mt-2 text-sm font-medium uppercase tracking-wide text-gray-500">{{ agent.status }}</p>
+    <div class="mt-2 flex items-center justify-between">
+      <p class="text-sm font-medium uppercase tracking-wide text-gray-500">{{ agent.status }}</p>
+      <button v-if="agent.status === 'working'" class="text-sm text-red-600" title="Kills the current run; the task will need resuming" @click="stopAgent">
+        Stop
+      </button>
+    </div>
     <p v-if="team" class="mt-1 text-sm text-gray-500">Team: {{ team.name }}</p>
 
     <DecisionPanel v-if="decision" :decision="decision" class="mt-4" />
 
-    <div v-if="currentTask" class="mt-4 border-t border-gray-100 pt-4">
-      <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-400">Current Task</h3>
-      <p class="mt-1 font-medium">{{ currentTask.title }}</p>
-      <p class="mt-1 text-sm text-gray-600">{{ currentTask.description }}</p>
+    <div class="mt-4 flex gap-4 border-b border-gray-200 text-sm">
+      <button
+        v-for="tab in TABS"
+        :key="tab"
+        class="border-b-2 px-1 pb-2 -mb-px"
+        :class="activeTab === tab ? 'border-blue-600 font-medium text-blue-600' : 'border-transparent text-gray-500'"
+        @click="activeTab = tab"
+      >
+        {{ tab }}
+      </button>
     </div>
 
-    <div v-if="recentActivity.length" class="mt-4 border-t border-gray-100 pt-4">
-      <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-400">Activity</h3>
-      <ul class="mt-1 flex flex-col gap-1 text-sm text-gray-600">
+    <div v-if="activeTab === 'Overview'" class="pt-4">
+      <div v-if="currentTask">
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-400">Current Task</h3>
+        <p class="mt-1 font-medium">{{ currentTask.title }}</p>
+        <p class="mt-1 text-sm text-gray-600">{{ currentTask.description }}</p>
+        <p class="mt-1 text-xs text-gray-400">Repository: {{ currentTaskRepository?.name ?? "Workspace default" }}</p>
+      </div>
+
+      <div class="mt-6 border-t border-gray-100 pt-4">
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-400">Agent Settings</h3>
+
+        <div v-if="!editingRuntime" class="mt-2 flex items-center justify-between text-sm text-gray-600">
+          <span>Model: {{ agent.model ?? "Workspace default" }} · Effort: {{ agent.effort ?? "Workspace default" }}</span>
+          <button class="text-blue-600" @click="startEditingRuntime">Edit</button>
+        </div>
+        <div v-else class="mt-2 rounded border border-gray-200 p-2">
+          <label class="block text-xs font-medium text-gray-500">Model</label>
+          <select v-model="modelDraft" class="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-sm">
+            <option value="">Workspace default</option>
+            <option v-for="option in MODEL_OPTIONS" :key="option" :value="option">{{ option }}</option>
+          </select>
+          <label class="mt-2 block text-xs font-medium text-gray-500">Effort</label>
+          <select v-model="effortDraft" class="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-sm">
+            <option value="">Workspace default</option>
+            <option v-for="option in EFFORT_OPTIONS" :key="option" :value="option">{{ option }}</option>
+          </select>
+          <p class="mt-2 text-xs text-gray-400">Applies to this agent's next run, not one already in progress.</p>
+          <div class="mt-2 flex gap-2">
+            <button class="rounded bg-blue-600 px-2 py-1 text-sm text-white disabled:opacity-50" :disabled="savingRuntime" @click="saveRuntime">Save</button>
+            <button class="rounded border border-gray-300 px-2 py-1 text-sm" @click="editingRuntime = false">Cancel</button>
+          </div>
+        </div>
+
+        <button v-if="!confirmingFire" class="mt-2 text-sm text-red-600" @click="confirmingFire = true">Fire Agent</button>
+        <div v-else class="mt-2 rounded border border-red-200 bg-red-50 p-2 text-sm">
+          <p>Fire {{ agent.name }}? Unfinished work returns to Backlog.</p>
+          <div class="mt-2 flex gap-2">
+            <button class="rounded bg-red-600 px-2 py-1 text-white" @click="confirmFire">Fire Agent</button>
+            <button class="rounded border border-gray-300 px-2 py-1" @click="confirmingFire = false">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div v-else-if="activeTab === 'Activity'" class="pt-4">
+      <ul v-if="recentActivity.length" class="flex flex-col gap-1 text-sm text-gray-600">
         <li v-for="(item, index) in recentActivity" :key="index">
           {{ item.toolName ? `Using ${item.toolName}` : item.text || item.kind }}
         </li>
       </ul>
+      <p v-else class="text-sm text-gray-400">No activity yet.</p>
     </div>
 
-    <div v-if="agentMemories.length" class="mt-4 border-t border-gray-100 pt-4">
-      <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-400">Private Memory</h3>
-      <div v-for="record in agentMemories" :key="record.id" class="mt-2 flex items-start justify-between gap-2 rounded border border-gray-200 p-2 text-sm">
-        <p>{{ record.content }}</p>
-        <button class="shrink-0 text-xs text-blue-600" @click="memory.promote(record.id, agent.id)">Share to workspace</button>
-      </div>
-    </div>
-
-    <div class="mt-6 border-t border-gray-100 pt-4">
-      <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-400">Agent Settings</h3>
-
-      <div v-if="!editingRuntime" class="mt-2 flex items-center justify-between text-sm text-gray-600">
-        <span>Model: {{ agent.model ?? "Workspace default" }} · Effort: {{ agent.effort ?? "Workspace default" }}</span>
-        <button class="text-blue-600" @click="startEditingRuntime">Edit</button>
-      </div>
-      <div v-else class="mt-2 rounded border border-gray-200 p-2">
-        <label class="block text-xs font-medium text-gray-500">Model</label>
-        <select v-model="modelDraft" class="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-sm">
-          <option value="">Workspace default</option>
-          <option v-for="option in MODEL_OPTIONS" :key="option" :value="option">{{ option }}</option>
-        </select>
-        <label class="mt-2 block text-xs font-medium text-gray-500">Effort</label>
-        <select v-model="effortDraft" class="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-sm">
-          <option value="">Workspace default</option>
-          <option v-for="option in EFFORT_OPTIONS" :key="option" :value="option">{{ option }}</option>
-        </select>
-        <p class="mt-2 text-xs text-gray-400">Applies to this agent's next run, not one already in progress.</p>
-        <div class="mt-2 flex gap-2">
-          <button class="rounded bg-blue-600 px-2 py-1 text-sm text-white disabled:opacity-50" :disabled="savingRuntime" @click="saveRuntime">Save</button>
-          <button class="rounded border border-gray-300 px-2 py-1 text-sm" @click="editingRuntime = false">Cancel</button>
+    <div v-else class="pt-4">
+      <div v-if="agentMemories.length" class="flex flex-col gap-2">
+        <div v-for="record in agentMemories" :key="record.id" class="flex items-start justify-between gap-2 rounded border border-gray-200 p-2 text-sm">
+          <p>{{ record.content }}</p>
+          <button class="shrink-0 text-xs text-blue-600" @click="memory.promote(record.id, agent.id)">Share to workspace</button>
         </div>
       </div>
-
-      <button v-if="!confirmingFire" class="mt-2 text-sm text-red-600" @click="confirmingFire = true">Fire Agent</button>
-      <div v-else class="mt-2 rounded border border-red-200 bg-red-50 p-2 text-sm">
-        <p>Fire {{ agent.name }}? Unfinished work returns to Backlog.</p>
-        <div class="mt-2 flex gap-2">
-          <button class="rounded bg-red-600 px-2 py-1 text-white" @click="confirmFire">Fire Agent</button>
-          <button class="rounded border border-gray-300 px-2 py-1" @click="confirmingFire = false">Cancel</button>
-        </div>
-      </div>
+      <p v-else class="text-sm text-gray-400">No private memory yet.</p>
     </div>
   </div>
 </template>

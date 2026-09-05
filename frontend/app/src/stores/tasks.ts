@@ -14,8 +14,8 @@ export const useTasksStore = defineStore("tasks", {
     async fetchTasks() {
       this.tasks = await api.get<Task[]>("/tasks")
     },
-    async createTask(title: string, description: string | undefined, priority: TaskPriority) {
-      const task = await api.post<Task>("/tasks", { title, description, priority })
+    async createTask(title: string, description: string | undefined, priority: TaskPriority, repositoryId: string | undefined) {
+      const task = await api.post<Task>("/tasks", { title, description, priority, repository_id: repositoryId })
       this.upsert(task)
       return task
     },

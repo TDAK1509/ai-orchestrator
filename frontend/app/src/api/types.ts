@@ -27,8 +27,20 @@ export interface Task {
   status: TaskStatus
   priority: TaskPriority
   assignee_id: string | null
+  repository_id: string | null
   started_at: string | null
   completed_at: string | null
+  created_at: string
+}
+
+export interface Repository {
+  id: string
+  name: string
+  path: string
+  default_target_branch: string
+  default_working_dir: string | null
+  setup_script: string | null
+  active: boolean
   created_at: string
 }
 

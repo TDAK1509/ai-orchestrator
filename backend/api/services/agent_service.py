@@ -100,6 +100,14 @@ async def stop_active_runtime(db: AsyncSession, runtime_service: RuntimeService,
         await runtime_service.kill_run(run.id)
 
 
+async def stop_agent(db: AsyncSession, runtime_service: RuntimeService, agent: Agent) -> ExecutionRun | None:
+    """B2: kills the run outright -- the process dies and the task needs resuming, not a soft turn-interrupt this system has no CLI-level way to do."""
+    run = await find_running_run_for_agent(db, agent)
+    if run is not None:
+        await runtime_service.kill_run(run.id)
+    return run
+
+
 async def find_running_run_for_agent(db: AsyncSession, agent: Agent) -> ExecutionRun | None:
     query = (
         select(ExecutionRun)

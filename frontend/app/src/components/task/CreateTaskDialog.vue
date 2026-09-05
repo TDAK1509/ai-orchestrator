@@ -1,21 +1,24 @@
 <script setup lang="ts">
 import { ref } from "vue"
 import type { TaskPriority } from "../../api/types"
+import { useRepositoriesStore } from "../../stores/repositories"
 import { useTasksStore } from "../../stores/tasks"
 
 defineEmits<{ close: [] }>()
 
 const tasks = useTasksStore()
+const repositories = useRepositoriesStore()
 const title = ref("")
 const description = ref("")
 const priority = ref<TaskPriority>("medium")
+const repositoryId = ref("")
 const submitting = ref(false)
 
 async function submit(onDone: () => void): Promise<void> {
   if (!title.value) return
   submitting.value = true
   try {
-    await tasks.createTask(title.value, description.value || undefined, priority.value)
+    await tasks.createTask(title.value, description.value || undefined, priority.value, repositoryId.value || undefined)
     onDone()
   } finally {
     submitting.value = false
@@ -39,6 +42,13 @@ async function submit(onDone: () => void): Promise<void> {
         <option value="low">Low</option>
         <option value="medium">Medium</option>
         <option value="high">High</option>
+      </select>
+      <label class="mt-3 block text-sm font-medium">Repository</label>
+      <select v-model="repositoryId" class="mt-1 w-full rounded border border-gray-300 px-2 py-1">
+        <option value="">Workspace default</option>
+        <option v-for="repository in repositories.repositories" :key="repository.id" :value="repository.id">
+          {{ repository.name }}
+        </option>
       </select>
       <div class="mt-4 flex justify-end gap-2">
         <button class="rounded border border-gray-300 px-3 py-1.5 text-sm" @click="$emit('close')">Cancel</button>

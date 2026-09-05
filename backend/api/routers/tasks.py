@@ -8,6 +8,7 @@ from events.bus import bus
 from events.schema import TASK_ASSIGNED, TASK_CREATED
 from lookups import get_or_404
 from models.agent import Agent
+from models.repository import Repository
 from models.task import Task, TaskPriority
 from serialization import serialize
 from services.task_service import assign_task, create_task, list_tasks
@@ -19,6 +20,7 @@ class CreateTaskBody(BaseModel):
     title: str
     description: str | None = None
     priority: TaskPriority = TaskPriority.MEDIUM
+    repository_id: uuid.UUID | None = None
 
 
 class AssignTaskBody(BaseModel):
@@ -32,7 +34,9 @@ async def list_tasks_route(db=Depends(get_db)):
 
 @router.post("", status_code=201)
 async def create_task_route(body: CreateTaskBody, db=Depends(get_db)):
-    task = await create_task(db, body.title, body.description, body.priority)
+    if body.repository_id is not None:
+        await get_or_404(db, Repository, body.repository_id, "repository")
+    task = await create_task(db, body.title, body.description, body.priority, body.repository_id)
     bus.publish(TASK_CREATED, serialize(task))
     return serialize(task)
 

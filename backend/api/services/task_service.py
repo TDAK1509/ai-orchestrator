@@ -45,7 +45,12 @@ from services.resume_service import (
 from services.run_driver import schedule_run_completion
 from services.scheduler_service import claim_next_queued_agent, claim_slot_or_queue
 from services.session_rotation_service import rotate_session
-from services.worktree_service import ensure_task_worktree
+from services.worktree_service import (
+    ensure_task_worktree,
+    resolve_base_branch,
+    resolve_repo_root,
+    resolve_task_repository,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,9 +66,10 @@ class TaskRuntimePolicy:
 
 
 async def create_task(
-    db, title: str, description: str | None = None, priority: TaskPriority = TaskPriority.MEDIUM
+    db, title: str, description: str | None = None, priority: TaskPriority = TaskPriority.MEDIUM,
+    repository_id: uuid.UUID | None = None,
 ) -> Task:
-    task = Task(id=uuid.uuid4(), title=title, description=description, priority=priority)
+    task = Task(id=uuid.uuid4(), title=title, description=description, priority=priority, repository_id=repository_id)
     db.add(task)
     await commit(db)
     return task
@@ -92,11 +98,18 @@ def require_assignable(task: Task, agent: Agent) -> None:
 
 async def start_agent_on_task(db, runtime_service: RuntimeService, repo_root: Path, agent: Agent, task: Task, policy: TaskRuntimePolicy) -> None:
     """Assumes the caller already claimed agent's WORKING slot; only spawns and hands the run to a background driver."""
-    task_worktree = await ensure_task_worktree(db, repo_root, task, policy.base_branch)
-    allowed_servers = await resolve_agent_mcp_servers(db, repo_root, agent)
-    message = await build_initial_message(db, agent, task, repo_root, allowed_servers)
+    task_repo_root, base_branch = await resolve_task_repo_context(db, repo_root, policy.base_branch, task)
+    task_worktree = await ensure_task_worktree(db, task_repo_root, task, base_branch)
+    allowed_servers = await resolve_agent_mcp_servers(db, task_repo_root, agent)
+    message = await build_initial_message(db, agent, task, task_repo_root, allowed_servers)
     run = await runtime_service.spawn(agent, task_worktree, allowed_servers, message)
     schedule_run_completion(runtime_service, repo_root, agent.id, task.id, task_worktree.id, run.id, policy)
+
+
+async def resolve_task_repo_context(db, repo_root: Path, default_branch: str, task: Task) -> tuple[Path, str]:
+    """A2: a task assigned a Repository (README 14) runs against that repository and its default branch, not the workspace's injected default."""
+    repository = await resolve_task_repository(db, task)
+    return resolve_repo_root(repository, repo_root), resolve_base_branch(repository, default_branch)
 
 
 async def resolve_agent_mcp_servers(db, repo_root: Path, agent: Agent) -> list[McpServerRef]:
@@ -144,7 +157,8 @@ async def attempt_resume_spawn(db, runtime_service: RuntimeService, repo_root: P
 
 
 async def resume_with_session_id(db, runtime_service: RuntimeService, repo_root: Path, agent: Agent, task: Task, task_worktree: TaskWorktree, agent_session: AgentSession, policy: TaskRuntimePolicy) -> bool:
-    allowed_servers = await resolve_agent_mcp_servers(db, repo_root, agent)
+    task_repo_root, _ = await resolve_task_repo_context(db, repo_root, policy.base_branch, task)
+    allowed_servers = await resolve_agent_mcp_servers(db, task_repo_root, agent)
     run = await runtime_service.resume(agent, agent_session, task_worktree, allowed_servers, agent_session.resume_prompt or "")
     schedule_run_completion(runtime_service, repo_root, agent.id, task.id, task_worktree.id, run.id, policy)
     return True
@@ -155,8 +169,9 @@ async def resume_from_checkpoint(db, runtime_service: RuntimeService, repo_root:
     checkpoint = await find_latest_unused_checkpoint(db, agent.id, task.id)
     if checkpoint is None:
         return False
-    allowed_servers = await resolve_agent_mcp_servers(db, repo_root, agent)
-    await rotate_session(db, runtime_service, repo_root, agent, task, task_worktree, agent_session, checkpoint, allowed_servers, policy)
+    task_repo_root, _ = await resolve_task_repo_context(db, repo_root, policy.base_branch, task)
+    allowed_servers = await resolve_agent_mcp_servers(db, task_repo_root, agent)
+    await rotate_session(db, runtime_service, task_repo_root, agent, task, task_worktree, agent_session, checkpoint, allowed_servers, policy)
     return True
 
 
@@ -170,17 +185,18 @@ async def land_or_block(db, agent: Agent, task: Task, task_worktree: TaskWorktre
 
 
 async def land_task(db, agent: Agent, task: Task, task_worktree: TaskWorktree, repo_root: Path, policy: TaskRuntimePolicy) -> TaskMerge:
+    task_repo_root, target_branch = await resolve_task_repo_context(db, repo_root, policy.target_branch, task)
     path = Path(task_worktree.path)
     landed_sha = await worktree_ops.commit_worktree(path, f"{task.title}\n\nAgent Office task {task.id}")
     if policy.merge_type == MergeType.PR:
         await worktree_ops.push_worktree(path, task_worktree.branch)
-    merge = await record_landed_merge(db, task, task_worktree, repo_root, policy)
+    merge = await record_landed_merge(db, task, task_worktree, task_repo_root, target_branch, policy)
     await extract_completion_memories_safely(db, agent, task, task_worktree.branch, landed_sha)
     return merge
 
 
-async def record_landed_merge(db, task: Task, task_worktree: TaskWorktree, repo_root: Path, policy: TaskRuntimePolicy) -> TaskMerge:
-    merge = await record_merge(task, task_worktree, repo_root, policy)
+async def record_landed_merge(db, task: Task, task_worktree: TaskWorktree, repo_root: Path, target_branch: str, policy: TaskRuntimePolicy) -> TaskMerge:
+    merge = await record_merge(task, task_worktree, repo_root, target_branch, policy)
     db.add(merge)
     task.status = TaskStatus.DONE
     task.completed_at = utcnow()
@@ -197,10 +213,10 @@ async def extract_completion_memories_safely(db, agent: Agent, task: Task, branc
         logger.exception("memory extraction failed for task %s", task.id)
 
 
-async def record_merge(task: Task, task_worktree: TaskWorktree, repo_root: Path, policy: TaskRuntimePolicy) -> TaskMerge:
+async def record_merge(task: Task, task_worktree: TaskWorktree, repo_root: Path, target_branch: str, policy: TaskRuntimePolicy) -> TaskMerge:
     if policy.merge_type == MergeType.PR:
-        return await record_pr_merge(task, task_worktree, policy.target_branch)
-    return await record_direct_merge(task, task_worktree, repo_root, policy.target_branch)
+        return await record_pr_merge(task, task_worktree, target_branch)
+    return await record_direct_merge(task, task_worktree, repo_root, target_branch)
 
 
 async def record_pr_merge(task: Task, task_worktree: TaskWorktree, target_branch: str) -> TaskMerge:
