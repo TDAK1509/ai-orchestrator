@@ -1,7 +1,8 @@
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from deps import get_db
 from events.bus import bus
@@ -14,6 +15,7 @@ from services.skill_import_service import (
     ImportSummary,
     claude_code_skills_dir,
     import_claude_code_skills,
+    list_available_skills,
 )
 from services.skill_service import (
     assign_skill,
@@ -40,30 +42,46 @@ class EditSkillBody(BaseModel):
     instructions: str | None = None
 
 
+class ImportSkillsBody(BaseModel):
+    # allow-comment: a real catalog is tens of entries; this bound is a resource-exhaustion guard, not a realistic limit.
+    slugs: list[Annotated[str, Field(max_length=120)]] | None = Field(default=None, max_length=1_000)
+
+
 @router.get("")
 async def list_skills_route(db=Depends(get_db)):
     return [serialize(skill) for skill in await list_skills(db)]
 
 
+@router.get("/available")
+async def list_available_skills_route(db=Depends(get_db)):
+    """PR 1: registered ahead of GET /{skill_id} -- "available" must never be parsed as a skill id."""
+    return {"entries": await list_available_skills(db, claude_code_skills_dir())}
+
+
 @router.post("/import")
-async def import_skills_route(db=Depends(get_db)):
-    summary = await import_claude_code_skills(db, claude_code_skills_dir())
+async def import_skills_route(body: ImportSkillsBody | None = None, db=Depends(get_db)):
+    slugs = body.slugs if body is not None else None
+    summary = await import_claude_code_skills(db, claude_code_skills_dir(), slugs)
     publish_import_events(summary)
     return serialize_import_summary(summary)
 
 
 def publish_import_events(summary: ImportSummary) -> None:
-    """Other connected clients only learn about a create/edit through these events; a bulk import must raise the same ones a single create/edit would."""
+    """Other connected clients only learn about a create/edit/delete through these events; a bulk import must raise the same ones a single create/edit/delete would."""
     for skill in summary.created:
         bus.publish(SKILL_CREATED, serialize(skill))
     for skill in summary.updated:
         bus.publish(SKILL_UPDATED, serialize(skill))
+    for skill in summary.removed:
+        bus.publish(SKILL_DELETED, serialize(skill))
 
 
 def serialize_import_summary(summary: ImportSummary) -> dict:
     return {
         "created": [skill.slug for skill in summary.created],
         "updated": [skill.slug for skill in summary.updated],
+        "removed": [skill.slug for skill in summary.removed],
+        "unassigned": summary.unassigned,
         "skipped": summary.skipped,
         "errors": summary.errors,
     }
