@@ -48,11 +48,25 @@ async def list_skills_route(db=Depends(get_db)):
 @router.post("/import")
 async def import_skills_route(db=Depends(get_db)):
     summary = await import_claude_code_skills(db, claude_code_skills_dir())
+    publish_import_events(summary)
     return serialize_import_summary(summary)
 
 
+def publish_import_events(summary: ImportSummary) -> None:
+    """Other connected clients only learn about a create/edit through these events; a bulk import must raise the same ones a single create/edit would."""
+    for skill in summary.created:
+        bus.publish(SKILL_CREATED, serialize(skill))
+    for skill in summary.updated:
+        bus.publish(SKILL_UPDATED, serialize(skill))
+
+
 def serialize_import_summary(summary: ImportSummary) -> dict:
-    return {"created": summary.created, "updated": summary.updated, "skipped": summary.skipped, "errors": summary.errors}
+    return {
+        "created": [skill.slug for skill in summary.created],
+        "updated": [skill.slug for skill in summary.updated],
+        "skipped": summary.skipped,
+        "errors": summary.errors,
+    }
 
 
 @router.get("/{skill_id}")

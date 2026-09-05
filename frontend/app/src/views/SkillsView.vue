@@ -9,6 +9,7 @@ const name = ref("")
 const description = ref("")
 const instructions = ref("")
 const confirmingImport = ref(false)
+const importInFlight = ref(false)
 const importSummary = ref<SkillImportSummary | null>(null)
 const importedSkillCount = computed(() => skills.skills.filter((skill) => skill.source === "imported").length)
 
@@ -25,8 +26,13 @@ async function createSkill(): Promise<void> {
 }
 
 async function runImport(): Promise<void> {
-  importSummary.value = await skills.importFromClaudeCode()
-  confirmingImport.value = false
+  importInFlight.value = true
+  try {
+    importSummary.value = await skills.importFromClaudeCode()
+    confirmingImport.value = false
+  } finally {
+    importInFlight.value = false
+  }
 }
 </script>
 
@@ -40,8 +46,10 @@ async function runImport(): Promise<void> {
       <p v-if="importedSkillCount">{{ importedSkillCount }} imported skill(s) may be overwritten with the version from ~/.claude/skills.</p>
       <p v-else>Skills from ~/.claude/skills will be imported.</p>
       <div class="mt-2 flex gap-2">
-        <button class="rounded bg-blue-600 px-2 py-1 text-white" @click="runImport">Sync</button>
-        <button class="rounded border border-gray-300 px-2 py-1" @click="confirmingImport = false">Cancel</button>
+        <button class="rounded bg-blue-600 px-2 py-1 text-white disabled:opacity-50" :disabled="importInFlight" @click="runImport">
+          {{ importInFlight ? "Syncing..." : "Sync" }}
+        </button>
+        <button class="rounded border border-gray-300 px-2 py-1" :disabled="importInFlight" @click="confirmingImport = false">Cancel</button>
       </div>
     </div>
     <div v-if="importSummary" class="mt-2 rounded border border-gray-200 bg-gray-50 p-2 text-sm text-gray-600">

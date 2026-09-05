@@ -1,3 +1,4 @@
+import asyncio
 import os
 import uuid
 from dataclasses import dataclass, field
@@ -9,6 +10,9 @@ from db import commit
 from models.skill import Skill, SkillSource
 
 DEFAULT_CLAUDE_SKILLS_DIR = Path.home() / ".claude" / "skills"
+MAX_SKILL_MD_BYTES = 1_000_000
+
+IMPORT_LOCK = asyncio.Lock()
 
 
 @dataclass
@@ -21,8 +25,8 @@ class ImportedSkillFile:
 
 @dataclass
 class ImportSummary:
-    created: list[str] = field(default_factory=list)
-    updated: list[str] = field(default_factory=list)
+    created: list[Skill] = field(default_factory=list)
+    updated: list[Skill] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
@@ -33,14 +37,16 @@ def claude_code_skills_dir() -> Path:
 
 
 async def import_claude_code_skills(db, directory: Path) -> ImportSummary:
-    """One-way sync (README 15): reads Claude Code's own skill directory and never writes back to it. An IMPORTED row is overwritten on the next press; a CUSTOM row that already owns the slug is left untouched and reported skipped."""
-    summary = ImportSummary()
-    skill_files, summary.errors = scan_claude_code_skills(directory)
-    existing = await load_skills_by_slug(db)
-    for skill_file in skill_files:
-        apply_imported_skill(db, existing.get(skill_file.slug), skill_file, summary)
-    await commit(db)
-    return summary
+    """One-way sync (README 15): reads Claude Code's own skill directory and never writes back to it. Serialized process-wide, so two presses racing on the same new slug can't both decide to insert it."""
+    async with IMPORT_LOCK:
+        summary = ImportSummary()
+        skill_files, summary.errors = await asyncio.to_thread(scan_claude_code_skills, directory)
+        existing = await load_skills_by_slug(db)
+        for skill_file in skill_files:
+            if skill_file is not None:
+                apply_imported_skill(db, existing.get(skill_file.slug), skill_file, summary)
+        await commit(db)
+        return summary
 
 
 def scan_claude_code_skills(directory: Path) -> tuple[list[ImportedSkillFile], list[str]]:
@@ -54,17 +60,20 @@ def scan_claude_code_skills(directory: Path) -> tuple[list[ImportedSkillFile], l
 
 
 def read_claude_code_skill(entry: Path, skill_files: list[ImportedSkillFile], errors: list[str]) -> None:
-    """Symlinks are followed here, unlike the old repo mirror: ~/.claude/skills is almost entirely symlinks into a Claude Code checkout the user already trusts, not a repo directory a stray link could escape."""
+    """Symlinks are followed here, unlike the old repo mirror: ~/.claude/skills is almost entirely symlinks into a Claude Code checkout the user already trusts, not a repo directory a stray link could escape. `is_file()` still guards against a FIFO or device node that a `read_text()` could hang or blow memory on, and the size cap below catches an oversized regular file."""
     skill_md = entry / "SKILL.md"
-    if not entry.is_dir() or not skill_md.exists():
+    if not entry.is_dir() or not skill_md.is_file():
         return
     try:
-        skill_files.append(build_imported_skill_file(entry, skill_md))
+        skill_files.append(build_imported_skill_file(entry, skill_md, errors))
     except OSError as exc:
         errors.append(f"{entry.name}: {exc}")
 
 
-def build_imported_skill_file(entry: Path, skill_md: Path) -> ImportedSkillFile:
+def build_imported_skill_file(entry: Path, skill_md: Path, errors: list[str]) -> ImportedSkillFile | None:
+    if skill_md.stat().st_size > MAX_SKILL_MD_BYTES:
+        errors.append(f"{entry.name}: SKILL.md exceeds {MAX_SKILL_MD_BYTES} bytes, skipped")
+        return None
     front_matter, instructions = split_front_matter(skill_md.read_text())
     slug = entry.name
     return ImportedSkillFile(
@@ -101,14 +110,15 @@ async def load_skills_by_slug(db) -> dict[str, Skill]:
 
 def apply_imported_skill(db, existing: Skill | None, skill_file: ImportedSkillFile, summary: ImportSummary) -> None:
     if existing is None:
-        db.add(build_imported_skill(skill_file))
-        summary.created.append(skill_file.slug)
+        skill = build_imported_skill(skill_file)
+        db.add(skill)
+        summary.created.append(skill)
         return
     if existing.source != SkillSource.IMPORTED:
         summary.skipped.append(skill_file.slug)
         return
     update_imported_skill(existing, skill_file)
-    summary.updated.append(skill_file.slug)
+    summary.updated.append(existing)
 
 
 def build_imported_skill(skill_file: ImportedSkillFile) -> Skill:
