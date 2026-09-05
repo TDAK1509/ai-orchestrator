@@ -39,7 +39,12 @@ onUnmounted(() => {
 })
 
 function handleKeydown(event: KeyboardEvent): void {
-  if (event.key === "Escape" && props.agent.status === "working") stopAgent()
+  if (event.key !== "Escape" || props.agent.status !== "working" || isEditableTarget(event.target)) return
+  stopAgent()
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
 }
 
 async function confirmFire(): Promise<void> {
@@ -76,6 +81,34 @@ async function saveRuntime(): Promise<void> {
     editingRuntime.value = false
   } finally {
     savingRuntime.value = false
+  }
+}
+
+const editingIdentity = ref(false)
+const nameDraft = ref("")
+const roleDraft = ref("")
+const instructionsDraft = ref("")
+const savingIdentity = ref(false)
+const identityError = ref("")
+
+function startEditingIdentity(): void {
+  nameDraft.value = props.agent.name
+  roleDraft.value = props.agent.role
+  instructionsDraft.value = props.agent.instructions
+  identityError.value = ""
+  editingIdentity.value = true
+}
+
+async function saveIdentity(): Promise<void> {
+  savingIdentity.value = true
+  identityError.value = ""
+  try {
+    await agentsStore.editAgent(props.agent.id, { name: nameDraft.value, role: roleDraft.value, instructions: instructionsDraft.value })
+    editingIdentity.value = false
+  } catch (err) {
+    identityError.value = err instanceof Error ? err.message : "Could not save, try again"
+  } finally {
+    savingIdentity.value = false
   }
 }
 
@@ -128,7 +161,54 @@ async function sendMessage(): Promise<void> {
     </div>
 
     <div v-if="activeTab === 'Overview'" class="pt-4">
-      <div v-if="currentTask">
+      <div class="border-b border-gray-100 pb-4">
+        <div class="flex items-center justify-between">
+          <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-400">Job Description</h3>
+          <button v-if="!editingIdentity" class="text-sm text-blue-600" @click="startEditingIdentity">Edit</button>
+        </div>
+
+        <div v-if="!editingIdentity" class="mt-2">
+          <p v-if="agent.instructions" class="whitespace-pre-wrap text-sm text-gray-700">{{ agent.instructions }}</p>
+          <p v-else class="text-sm text-gray-400">No instructions set. Add some to give this agent working rules.</p>
+        </div>
+        <div v-else class="mt-2 space-y-2">
+          <div>
+            <label class="block text-xs font-medium text-gray-500">Name</label>
+            <input v-model="nameDraft" class="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-500">Role</label>
+            <input v-model="roleDraft" class="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-500">Instructions</label>
+            <textarea
+              v-model="instructionsDraft"
+              rows="8"
+              class="mt-1 w-full rounded border border-gray-300 px-2 py-1 font-mono text-sm"
+              placeholder="This agent's job description and working rules..."
+            />
+          </div>
+          <p class="text-xs text-gray-400">
+            Applies the next time this agent starts a new session — a new task, or one rebuilt from a checkpoint. A
+            message, a retry, or crash recovery resumes the current session and won't see the change.
+          </p>
+          <p class="text-xs text-gray-400">A rule for several agents belongs in a skill, not copied into each agent's instructions.</p>
+          <p v-if="identityError" class="text-xs text-red-600">{{ identityError }}</p>
+          <div class="flex gap-2">
+            <button
+              class="rounded bg-blue-600 px-2 py-1 text-sm text-white disabled:opacity-50"
+              :disabled="savingIdentity || !nameDraft.trim() || !roleDraft.trim()"
+              @click="saveIdentity"
+            >
+              Save
+            </button>
+            <button class="rounded border border-gray-300 px-2 py-1 text-sm" @click="editingIdentity = false">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="currentTask" class="mt-4">
         <h3 class="text-xs font-semibold uppercase tracking-wide text-gray-400">Current Task</h3>
         <p class="mt-1 font-medium">{{ currentTask.title }}</p>
         <p class="mt-1 text-sm text-gray-600">{{ currentTask.description }}</p>

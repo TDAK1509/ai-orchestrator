@@ -26,11 +26,13 @@ router = APIRouter(prefix="/agents", tags=["agents"])
 
 # allow-comment: the catalog holds 12 skills today -- this cap keeps one hire request from issuing an unbounded number of skill lookups, not from ever matching the catalog's real size.
 MAX_HIRE_SKILL_IDS = 50
+# allow-comment: matches Agent.name/.role's String(120) columns -- rejecting an over-length value here, not at the database, keeps a Postgres column-width error from surfacing as an unhandled 500.
+MAX_NAME_OR_ROLE_LENGTH = 120
 
 
 class HireAgentBody(BaseModel):
-    name: str
-    role: str
+    name: str = Field(max_length=MAX_NAME_OR_ROLE_LENGTH)
+    role: str = Field(max_length=MAX_NAME_OR_ROLE_LENGTH)
     instructions: str = ""
     team_id: uuid.UUID | None = None
     model: str | None = None
@@ -39,8 +41,8 @@ class HireAgentBody(BaseModel):
 
 
 class EditAgentBody(BaseModel):
-    name: str | None = None
-    role: str | None = None
+    name: str | None = Field(default=None, max_length=MAX_NAME_OR_ROLE_LENGTH)
+    role: str | None = Field(default=None, max_length=MAX_NAME_OR_ROLE_LENGTH)
     instructions: str | None = None
     model: str | None = None
     effort: AgentEffort | None = None
