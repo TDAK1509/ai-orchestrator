@@ -13,6 +13,7 @@ class TaskStatus(str, enum.Enum):
     IN_PROGRESS = "in_progress"
     BLOCKED = "blocked"
     DONE = "done"
+    ARCHIVED = "archived"
 
 
 class TaskPriority(str, enum.Enum):

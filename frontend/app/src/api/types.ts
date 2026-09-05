@@ -17,7 +17,7 @@ export interface Agent {
   created_at: string
 }
 
-export type TaskStatus = "backlog" | "in_progress" | "blocked" | "done"
+export type TaskStatus = "backlog" | "in_progress" | "blocked" | "done" | "archived"
 export type TaskPriority = "low" | "medium" | "high"
 
 export interface Task {

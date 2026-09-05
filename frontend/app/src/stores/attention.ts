@@ -14,6 +14,7 @@ export const useAttentionStore = defineStore("attention", {
   getters: {
     unresolvedCount: (state) => state.attentionEvents.filter((event) => !event.resolved).length,
     decisionForAgent: (state) => (agentId: string) => state.pendingDecisions.find((d) => d.agent_id === agentId),
+    attentionForTask: (state) => (taskId: string) => state.attentionEvents.find((event) => event.task_id === taskId && !event.resolved),
   },
   actions: {
     async fetchPendingDecisions() {

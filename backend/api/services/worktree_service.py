@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db import commit
 from models.repository import Repository
 from models.task import Task
-from models.worktree import TaskWorktree
+from models.worktree import TaskWorktree, WorktreeStatus
 from runtime import worktree as worktree_ops
 
 
@@ -35,6 +35,19 @@ async def create_task_worktree(db: AsyncSession, repo_root: Path, task: Task, ba
     db.add(record)
     await commit(db)
     return record
+
+
+async def remove_task_worktree(db: AsyncSession, default_repo_root: Path, task: Task) -> TaskWorktree | None:
+    """Archiving a task (PR 0b): the git checkout goes, but the row stays REMOVED, not deleted -- task_worktrees.task_id must survive alongside the task it archives with."""
+    task_worktree = await find_task_worktree(db, task.id)
+    if task_worktree is None:
+        return None
+    repository = await resolve_task_repository(db, task)
+    repo_root = resolve_repo_root(repository, default_repo_root)
+    await worktree_ops.remove_worktree(repo_root, Path(task_worktree.path))
+    task_worktree.status = WorktreeStatus.REMOVED
+    await commit(db)
+    return task_worktree
 
 
 async def resolve_task_repository(db: AsyncSession, task: Task) -> Repository | None:

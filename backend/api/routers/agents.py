@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from deps import get_db, get_runtime_service
+from deps import get_db, get_policy, get_repo_root, get_runtime_service
 from events.bus import bus
 from events.schema import AGENT_CREATED, AGENT_FIRED
 from lookups import get_active_or_404, get_or_404
@@ -20,6 +20,7 @@ from services.agent_service import (
     restore_agent,
     stop_agent,
 )
+from services.task_service import send_message_to_agent
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -43,6 +44,11 @@ class EditAgentBody(BaseModel):
     instructions: str | None = None
     model: str | None = None
     effort: AgentEffort | None = None
+
+
+class SendMessageBody(BaseModel):
+    # allow-comment: bounds a human-authored prompt the way MAX_HIRE_SKILL_IDS bounds skill_ids above -- large enough for a real message, small enough to cap the prompt/process one bad request can trigger.
+    content: str = Field(min_length=1, max_length=20000)
 
 
 @router.get("")
@@ -108,3 +114,14 @@ async def stop_agent_route(agent_id: uuid.UUID, db=Depends(get_db), runtime_serv
     agent = await get_or_404(db, Agent, agent_id, "agent")
     run = await stop_agent(db, runtime_service, agent)
     return {"stopped": run is not None}
+
+
+@router.post("/{agent_id}/message")
+async def send_agent_message_route(
+    agent_id: uuid.UUID, body: SendMessageBody, db=Depends(get_db),
+    runtime_service=Depends(get_runtime_service), repo_root=Depends(get_repo_root), policy=Depends(get_policy),
+):
+    """PR 1: resumes the agent's own last session with a human's text -- one message is one run, the reply arrives on the existing activity feed."""
+    agent = await get_or_404(db, Agent, agent_id, "agent")
+    run = await send_message_to_agent(db, runtime_service, repo_root, agent, body.content, policy)
+    return serialize(run)
