@@ -39,7 +39,12 @@ onUnmounted(() => {
 })
 
 function handleKeydown(event: KeyboardEvent): void {
-  if (event.key === "Escape" && props.agent.status === "working") stopAgent()
+  if (event.key !== "Escape" || props.agent.status !== "working" || isEditableTarget(event.target)) return
+  stopAgent()
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
 }
 
 async function confirmFire(): Promise<void> {
@@ -84,19 +89,24 @@ const nameDraft = ref("")
 const roleDraft = ref("")
 const instructionsDraft = ref("")
 const savingIdentity = ref(false)
+const identityError = ref("")
 
 function startEditingIdentity(): void {
   nameDraft.value = props.agent.name
   roleDraft.value = props.agent.role
   instructionsDraft.value = props.agent.instructions
+  identityError.value = ""
   editingIdentity.value = true
 }
 
 async function saveIdentity(): Promise<void> {
   savingIdentity.value = true
+  identityError.value = ""
   try {
     await agentsStore.editAgent(props.agent.id, { name: nameDraft.value, role: roleDraft.value, instructions: instructionsDraft.value })
     editingIdentity.value = false
+  } catch (err) {
+    identityError.value = err instanceof Error ? err.message : "Could not save, try again"
   } finally {
     savingIdentity.value = false
   }
@@ -179,8 +189,12 @@ async function sendMessage(): Promise<void> {
               placeholder="This agent's job description and working rules..."
             />
           </div>
-          <p class="text-xs text-gray-400">Applies to this agent's next run. A task already running keeps the instructions it started with.</p>
+          <p class="text-xs text-gray-400">
+            Applies the next time this agent starts a new session — a new task, or one rebuilt from a checkpoint. A
+            message, a retry, or crash recovery resumes the current session and won't see the change.
+          </p>
           <p class="text-xs text-gray-400">A rule for several agents belongs in a skill, not copied into each agent's instructions.</p>
+          <p v-if="identityError" class="text-xs text-red-600">{{ identityError }}</p>
           <div class="flex gap-2">
             <button
               class="rounded bg-blue-600 px-2 py-1 text-sm text-white disabled:opacity-50"
