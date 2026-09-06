@@ -8,7 +8,7 @@ export const meta = {
   ],
 }
 
-const MAX_ROUNDS = 5
+const MAX_ROUNDS = 3
 
 const REVIEW_SCHEMA = {
   type: 'object',
