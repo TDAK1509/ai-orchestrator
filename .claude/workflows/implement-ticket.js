@@ -1,7 +1,7 @@
 export const meta = {
   name: 'implement-ticket',
   description: 'Implement an approved plan, looping developer <-> code-review until approved',
-  whenToUse: 'Pass args.ticket and args.plan (the output of plan-ticket.js, approved by a human first). Loops developer and code-review agents until the reviewer approves or the round cap is hit.',
+  whenToUse: 'Pass args.request and args.plan (the output of plan-ticket.js, approved by a human first). Loops developer and code-review agents until the reviewer approves or the round cap is hit.',
   phases: [
     { title: 'Develop', detail: 'developer agent implements the plan or addresses review feedback' },
     { title: 'Review', detail: 'code-review agent checks the implementation against the plan' },
@@ -19,8 +19,8 @@ const REVIEW_SCHEMA = {
   required: ['approved', 'feedback'],
 }
 
-if (!args || !args.ticket || !args.plan) {
-  throw new Error('implement-ticket requires args.ticket and args.plan')
+if (!args || !args.request || !args.plan) {
+  throw new Error('implement-ticket requires args.request and args.plan')
 }
 
 let approved = false
@@ -33,8 +33,8 @@ while (!approved && round < MAX_ROUNDS) {
 
   phase('Develop')
   const devPrompt = feedback
-    ? `Ticket:\n${args.ticket}\n\nApproved plan:\n${args.plan}\n\nA code reviewer requested these changes to your previous implementation — address them:\n${feedback}`
-    : `Ticket:\n${args.ticket}\n\nImplement this approved plan:\n${args.plan}`
+    ? `Request:\n${args.request}\n\nApproved plan:\n${args.plan}\n\nA code reviewer requested these changes to your previous implementation — address them:\n${feedback}`
+    : `Request:\n${args.request}\n\nImplement this approved plan:\n${args.plan}`
   devResult = await agent(devPrompt, { agentType: 'developer', phase: 'Develop', label: `develop-round-${round}` })
 
   phase('Review')
